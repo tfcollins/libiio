@@ -123,10 +123,15 @@ jobs:
     matrix:
       debian-stretch-arm64:
         image: multiarch/debian-debootstrap:arm64-stretch
+      ubuntu-x390x:
+        image: s390x/ubuntu
+      ubuntu-arm32:
+        image: arm32v7/ubuntu
   steps:
   - script: |
       sudo docker run --rm --privileged multiarch/qemu-user-static:register --reset
-      sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-'$(System.JobName)'.sh && ./CI/azure/ci-'$(System.JobName)'.sh"
+      #sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-'$(System.JobName)'.sh && ./CI/azure/ci-'$(System.JobName)'.sh"
+      sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-debian-stretch-arm64.sh && ./CI/azure/ci-debian-stretch-arm64.sh"
     displayName: "Setup and Build"
 
 
