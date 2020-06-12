@@ -135,7 +135,7 @@ jobs:
       sudo docker --version
       sudo docker run --rm --privileged multiarch/qemu-user-static:register --reset
       echo "HERERSR"
-      sudo docker run -it multiarch/debian-debootstrap:arm64-stretch /bin/bash CI/azure/ci.sh
+      sudo docker run multiarch/debian-debootstrap:arm64-stretch /bin/bash CI/azure/ci.sh
       #sudo docker run -it --rm multiarch/debian-debootstrap:arm64-stretch
 
     displayName: "Setup Ubuntu"
