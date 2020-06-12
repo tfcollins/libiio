@@ -124,18 +124,19 @@ jobs:
       ubuntu-ppc64le:
         image: ppc64le/ubuntu
         arch: ppc64le
+        build_script: ci-ubuntu.sh
       ubuntu-x390x:
         image: s390x/ubuntu
         arch: s390x
+        build_script: ci-ubuntu.sh
       ubuntu-arm64v8:
         image: arm64v8/ubuntu
         arch: aarch64
+        build_script: ci-ubuntu.sh
       ubuntu-arm32v7:
         image: arm32v7/ubuntu
         arch: arm
-      ubuntu-arm32v6:
-        image: arm32v6/ubuntu
-        arch: arm
+        build_script: ci-ubuntu.sh
   steps:
   - script: |
       sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-arm-static
@@ -143,12 +144,10 @@ jobs:
       sudo apt-get install -y g++-aarch64-linux-gnu libstdc++-4.8-dev-arm64-cross
       sudo apt-get install -y qemu-system-ppc64
       sudo apt-get install qemu
-      #sudo docker run --rm --privileged multiarch/qemu-user-static:register --reset -p yes
       sudo docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
     displayName: "Setup"
   - script: |
-      #sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-'$(System.JobName)'.sh && ./CI/azure/ci-'$(System.JobName)'.sh"
-      sudo docker run --rm -t --privileged -v "$(Agent.BuildDirectory)/s":"/ci" -v "/usr/bin/qemu-$(arch)-static":"/usr/bin/qemu-$(arch)-static" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-debian-stretch-arm64.sh && ./CI/azure/ci-debian-stretch-arm64.sh"
+      sudo docker run --rm -t --privileged -v "$(Agent.BuildDirectory)/s":"/ci" -v "/usr/bin/qemu-$(arch)-static":"/usr/bin/qemu-$(arch)-static" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/$(build_script) && ./CI/azure/$(build_script)"
     displayName: "Build"
 
 
