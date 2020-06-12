@@ -126,7 +126,7 @@ jobs:
   steps:
   - script: |
       sudo docker run --rm --privileged multiarch/qemu-user-static:register --reset
-      sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci.sh && ./CI/azure/ci-'$(System.StageName)'.sh"
+      sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-'$(System.StageName)'.sh && ./CI/azure/ci-'$(System.StageName)'.sh"
 
     displayName: "Setup and Build"
 
