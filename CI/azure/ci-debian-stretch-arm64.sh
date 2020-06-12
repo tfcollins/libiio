@@ -2,7 +2,7 @@
 set -x
 uname -a
 apt update
-apt upgrade -qq
+apt -y upgrade
 apt install -y bison flex cmake git build-essential libxml2-dev doxygen
 apt install -y python3 python3-sphinx python3-setuptools
 mkdir build && cd build
