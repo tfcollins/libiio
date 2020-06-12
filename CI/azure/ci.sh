@@ -1,5 +1,6 @@
 #!/bin/bash
 set -x
+uname -a
 apt update
 apt upgrade -qq
 apt install -y bison flex cmake git build-essential libxml2-dev doxygen
