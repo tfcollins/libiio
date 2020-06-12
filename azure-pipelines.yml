@@ -134,7 +134,8 @@ jobs:
       ls
       sudo docker --version
       sudo docker run --rm --privileged multiarch/qemu-user-static:register --reset
-      sudo docker run -v ${pwd}:/root multiarch/debian-debootstrap:arm64-stretch /bin/bash "pwd && chmod +x ./CI/azure/ci.sh && ./CI/azure/ci.sh"
+      #sudo docker run -v ${pwd}:/root multiarch/debian-debootstrap:arm64-stretch /bin/bash "pwd && chmod +x ./CI/azure/ci.sh && ./CI/azure/ci.sh"
+      sudo docker run -v ${pwd}:/root multiarch/debian-debootstrap:arm64-stretch /bin/bash "pwd"
       #sudo docker run -it --rm multiarch/debian-debootstrap:arm64-stretch
 
     displayName: "Setup Ubuntu"
