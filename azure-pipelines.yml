@@ -140,9 +140,7 @@ jobs:
     displayName: "Setup"
   - script: |
       #sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-'$(System.JobName)'.sh && ./CI/azure/ci-'$(System.JobName)'.sh"
-      sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" \
-       -v /usr/bin/qemu-"$(arch)"-static:/usr/bin/qemu-"$(arch)"-static \
-       /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-debian-stretch-arm64.sh && ./CI/azure/ci-debian-stretch-arm64.sh"
+      sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" -v "/usr/bin/qemu-$(arch)-static":"/usr/bin/qemu-$(arch)-static" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-debian-stretch-arm64.sh && ./CI/azure/ci-debian-stretch-arm64.sh"
     displayName: "Build"
 
 
