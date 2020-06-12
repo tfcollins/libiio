@@ -114,7 +114,7 @@ jobs:
     displayName: "Build With Doc"
 
 ###########################################################
-- job: DockerBuilds
+- job: ARMBuilds
   # Host Box
   pool:
     vmImage: 'ubuntu-16.04'
@@ -127,7 +127,6 @@ jobs:
   - script: |
       sudo docker run --rm --privileged multiarch/qemu-user-static:register --reset
       sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-'$(System.JobName)'.sh && ./CI/azure/ci-'$(System.JobName)'.sh"
-
     displayName: "Setup and Build"
 
 
