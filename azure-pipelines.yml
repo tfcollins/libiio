@@ -123,16 +123,27 @@ jobs:
     matrix:
       debian-stretch-arm64:
         image: multiarch/debian-debootstrap:arm64-stretch
+        arch: aarch64
       ubuntu-x390x:
         image: s390x/ubuntu
+        arch: s390x
       ubuntu-arm32:
         image: arm32v7/ubuntu
+        arch: arm
   steps:
   - script: |
+      sudo apt-get install gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-arm-static
+      sudo apt-get install g++-arm-linux-gnueabihf libstdc++-4.8-dev-armhf-cross
+      sudo apt-get install g++-aarch64-linux-gnu libstdc++-4.8-dev-arm64-cross
+      sudo apt-get install qemu
       sudo docker run --rm --privileged multiarch/qemu-user-static:register --reset
+    displayName: "Setup"
+  - script: |
       #sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-'$(System.JobName)'.sh && ./CI/azure/ci-'$(System.JobName)'.sh"
-      sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-debian-stretch-arm64.sh && ./CI/azure/ci-debian-stretch-arm64.sh"
-    displayName: "Setup and Build"
+      sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" \
+       -v /usr/bin/qemu-"$(arch)"-static:/usr/bin/qemu-"$(arch)"-static \
+       /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-debian-stretch-arm64.sh && ./CI/azure/ci-debian-stretch-arm64.sh"
+    displayName: "Build"
 
 
 ###########################################################
