@@ -128,8 +128,7 @@ jobs:
       sudo docker run --rm --privileged multiarch/qemu-user-static:register --reset
       sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci.sh && ./CI/azure/ci.sh"
 
-    displayName: "Setup Ubuntu"
-    condition: contains(variables['image'], 'ubuntu')
+    displayName: "Setup and Build"
 
 
 ###########################################################
