@@ -121,23 +121,12 @@ jobs:
   # Docker Images
   strategy:
     matrix:
-      ubuntu18:
-        image: tfcollins/test-ubuntu:18.04
-      ubuntu20:
-        image: tfcollins/test-ubuntu:20.04
-      fedora32:
-        image: tfcollins/test-fedora:32
-  #container: $[ variables['image'] ]
+      debian-stretch-arm64:
+        image: multiarch/debian-debootstrap:arm64-stretch
   steps:
   - script: |
-      pwd
-      ls
-      sudo docker --version
       sudo docker run --rm --privileged multiarch/qemu-user-static:register --reset
-      #sudo docker run -v ${pwd}:/root multiarch/debian-debootstrap:arm64-stretch /bin/bash "pwd && chmod +x ./CI/azure/ci.sh && ./CI/azure/ci.sh"
-      #sudo docker run --rm -v ${pwd}:/root multiarch/debian-debootstrap:arm64-stretch /bin/bash -c "cd ~/ && chmod +x ./CI/azure/ci.sh && ./CI/azure/ci.sh"
-      sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" multiarch/debian-debootstrap:arm64-stretch /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci.sh && ./CI/azure/ci.sh"
-      #sudo docker run -it --rm multiarch/debian-debootstrap:arm64-stretch
+      sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci.sh && ./CI/azure/ci.sh"
 
     displayName: "Setup Ubuntu"
     condition: contains(variables['image'], 'ubuntu')
