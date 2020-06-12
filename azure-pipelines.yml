@@ -121,30 +121,32 @@ jobs:
   # Docker Images
   strategy:
     matrix:
-      debian-stretch-arm64:
-        image: multiarch/debian-debootstrap:arm64-stretch
-        arch: aarch64
+      ubuntu-ppc64le:
+        image: ppc64le/ubuntu
+        arch: ppc64le
       ubuntu-x390x:
         image: s390x/ubuntu
         arch: s390x
       ubuntu-arm64v8:
         image: arm64v8/ubuntu
         arch: aarch64
-      ubuntu-arm32:
+      ubuntu-arm32v7:
         image: arm32v7/ubuntu
+        arch: arm
+      ubuntu-arm32v6:
+        image: arm32v6/ubuntu
         arch: arm
   steps:
   - script: |
-      sudo apt-get install gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-arm-static
-      sudo apt-get install g++-arm-linux-gnueabihf libstdc++-4.8-dev-armhf-cross
-      sudo apt-get install g++-aarch64-linux-gnu libstdc++-4.8-dev-arm64-cross
+      sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-arm-static
+      sudo apt-get install -y g++-arm-linux-gnueabihf libstdc++-4.8-dev-armhf-cross
+      sudo apt-get install -y g++-aarch64-linux-gnu libstdc++-4.8-dev-arm64-cross
+      sudo apt-get install -y qemu-system-ppc64
       sudo apt-get install qemu
       #sudo docker run --rm --privileged multiarch/qemu-user-static:register --reset -p yes
       sudo docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
     displayName: "Setup"
   - script: |
-      docker run --rm -t arm64v8/ubuntu uname -m
-      docker run --rm -t s390x/ubuntu uname -m
       #sudo docker run --rm -v "$(Agent.BuildDirectory)/s":"/ci" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-'$(System.JobName)'.sh && ./CI/azure/ci-'$(System.JobName)'.sh"
       sudo docker run --rm -t --privileged -v "$(Agent.BuildDirectory)/s":"/ci" -v "/usr/bin/qemu-$(arch)-static":"/usr/bin/qemu-$(arch)-static" "$(image)" /bin/bash -c "cd /ci/ && chmod +x ./CI/azure/ci-debian-stretch-arm64.sh && ./CI/azure/ci-debian-stretch-arm64.sh"
     displayName: "Build"
