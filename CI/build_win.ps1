@@ -1,5 +1,3 @@
-set -x
-
 $COMPILER=$Env:COMPILER
 $ARCH=$Env:ARCH
 
