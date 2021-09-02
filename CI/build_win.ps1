@@ -23,4 +23,4 @@ ls "$src_dir"
 ls c:\projects\libiio\build-win64\
 
 
-iscc "$src_dir\libiio.iss"
+iscc libiio.iss
