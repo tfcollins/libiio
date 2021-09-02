@@ -1,3 +1,4 @@
+set -x
 
 $COMPILER=$Env:COMPILER
 $ARCH=$Env:ARCH
@@ -18,5 +19,8 @@ cp ..\iio.h c:\projects\libiio\build-win64\
 cp C:\libs\64\*.dll c:\projects\libiio\build-win64\
 
 ls "$src_dir"
+
+ls c:\projects\libiio\build-win64\
+
 
 iscc "$src_dir\libiio.iss"
