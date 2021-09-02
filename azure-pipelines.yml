@@ -5,6 +5,7 @@ trigger:
     - master
     - staging/*
     - 20*
+    - tfcollins*
   tags:
     include:
     - v*
