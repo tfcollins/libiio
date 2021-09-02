@@ -10,4 +10,13 @@ cd build
 cmake -G "$COMPILER" -A "$ARCH" -DENABLE_IPV6=OFF -DWITH_USB_BACKEND=OFF -DWITH_SERIAL_BACKEND=OFF -DPYTHON_BINDINGS=ON -DLIBXML2_LIBRARIES="$src_dir\deps\lib\libxml2.dll.a" ..
 cmake --build . --config Release
 
+mkdir c:\projects\libiio\build-win64
+
+cp Release\libiio.dll c:\projects\libiio\build-win64\
+cp Release\*.exe c:\projects\libiio\build-win64\
+cp ..\iio.h c:\projects\libiio\build-win64\
+cp C:\libs\64\*.dll c:\projects\libiio\build-win64\
+
+ls "$src_dir"
+
 iscc "$src_dir\libiio.iss"
