@@ -10,6 +10,7 @@ cmake -G "$COMPILER" -A "$ARCH" -DENABLE_IPV6=OFF -DWITH_USB_BACKEND=OFF -DWITH_
 cmake --build . --config Release
 
 ls "$src_dir\build"
+ls "$src_dir\build\Release"
 
 mkdir c:\projects\libiio\build-win64
 mkdir c:\projects\libiio\build-win64\Release
