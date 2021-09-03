@@ -33,10 +33,11 @@ ls c:\projects\libiio\build-win64\Release\
 ls "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\"
 ls "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Redist\"
 
+echo "HERE"
 find "C:\Program Files (x86)\Microsoft Visual Studio\2019" | grep -i msvcr120.dll
+echo "HERE2"
 
-ls "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Redist\x64\"
-ls "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Redist\x64\Microsoft.VC120.CRT"
+ls "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Redist\MSVC\"
 
 
 iscc libiio.iss
