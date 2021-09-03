@@ -14,10 +14,12 @@ ls "$src_dir\build\Release"
 
 mkdir c:\projects\libiio\build-win64
 mkdir c:\projects\libiio\build-win64\Release
+mkdir c:\projects\libiio\build-win64\tests
+mkdir c:\projects\libiio\build-win64\tests\Release
 
 cp Release\libiio.dll c:\projects\libiio\build-win64\Release\
 cp Release\libiio.lib c:\projects\libiio\build-win64\Release\
-cp tests\Release\*.exe c:\projects\libiio\build-win64\Release\
+cp tests\Release\*.exe c:\projects\libiio\build-win64\tests\Release\
 cp ..\iio.h c:\projects\libiio\
 cp C:\libs\64\*.dll c:\projects\libiio\build-win64\
 
