@@ -149,13 +149,13 @@ stages:
     - task: CopyFiles@2
       displayName: 'Copy libraries'
       inputs:
-        sourceFolder: '$(Agent.BuildDirectory)/s/build/Release'
+        sourceFolder: '$(Agent.BuildDirectory)/s/build'
         targetFolder: '$(Build.ArtifactStagingDirectory)'
     - task: CopyFiles@2
       displayName: 'Copy iio.h header'
       inputs:
-        sourceFolder: '$(Agent.BuildDirectory)/s/'
-        contents: 'iio.h'
+        sourceFolder: '$(Agent.BuildDirectory)/s/build'
+        contents: '*.lib'
         targetFolder: '$(Build.ArtifactStagingDirectory)'
     - task: PublishPipelineArtifact@1
       condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
