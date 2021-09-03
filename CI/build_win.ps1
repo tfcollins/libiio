@@ -16,7 +16,7 @@ cp Release\*.exe c:\projects\libiio\build-win64\
 cp ..\iio.h c:\projects\libiio\build-win64\
 cp C:\libs\64\*.dll c:\projects\libiio\build-win64\
 
-cp "$src_dir\COPYING.TXT" c:\projects\libiio\build-win64\
+cp "$src_dir\COPYING.txt" c:\projects\libiio\build-win64\
 
 ls "$src_dir"
 
