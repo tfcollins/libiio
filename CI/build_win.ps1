@@ -23,6 +23,6 @@ cp "$src_dir\COPYING.txt" c:\projects\libiio\
 ls "$src_dir"
 
 ls c:\projects\libiio\build-win64\
-
+ls c:\projects\libiio\build-win64\Release\
 
 iscc libiio.iss
