@@ -43,3 +43,5 @@ ls "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Redist\MSV
 
 
 iscc libiio.iss
+
+cp C:\libiio-setup.exe "$src_dir\build"
