@@ -30,4 +30,9 @@ ls "$src_dir"
 ls c:\projects\libiio\build-win64\
 ls c:\projects\libiio\build-win64\Release\
 
+ls C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\
+ls C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\redist\
+ls C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\redist\x64\
+ls C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\redist\x64\Microsoft.VC120.CRT
+
 iscc libiio.iss
