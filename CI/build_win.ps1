@@ -17,7 +17,7 @@ mkdir c:\projects\libiio\build-win64\Release
 
 cp Release\libiio.dll c:\projects\libiio\build-win64\Release\
 cp Release\libiio.lib c:\projects\libiio\build-win64\Release\
-cp Release\*.exe c:\projects\libiio\build-win64\Release\
+cp tests\Release\*.exe c:\projects\libiio\build-win64\Release\
 cp ..\iio.h c:\projects\libiio\
 cp C:\libs\64\*.dll c:\projects\libiio\build-win64\
 
