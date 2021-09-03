@@ -10,10 +10,12 @@ cmake -G "$COMPILER" -A "$ARCH" -DENABLE_IPV6=OFF -DWITH_USB_BACKEND=OFF -DWITH_
 cmake --build . --config Release
 
 mkdir c:\projects\libiio\build-win64
+mkdir c:\projects\libiio\build-win64\Release
 
-cp Release\libiio.dll c:\projects\libiio\build-win64\
-cp Release\*.exe c:\projects\libiio\build-win64\
-cp ..\iio.h c:\projects\libiio\build-win64\
+cp Release\libiio.dll c:\projects\libiio\build-win64\Release\
+cp Release\libiio.lib c:\projects\libiio\build-win64\Release\
+cp Release\*.exe c:\projects\libiio\build-win64\Release\
+cp ..\iio.h c:\projects\libiio\
 cp C:\libs\64\*.dll c:\projects\libiio\build-win64\
 
 cp "$src_dir\COPYING.txt" c:\projects\libiio\
