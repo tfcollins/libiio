@@ -34,7 +34,7 @@ ls "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\"
 ls "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Redist\"
 
 echo "HERE"
-find "C:\Program Files (x86)\Microsoft Visual Studio\2019" | grep -i msvcr120.dll
+find "C:\Program Files (x86)\Microsoft Visual Studio\2019" | grep -i msvcr
 echo "HERE2"
 
 ls "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Redist\MSVC\"
