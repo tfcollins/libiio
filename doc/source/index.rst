@@ -174,6 +174,7 @@ Project Pages
    migration
    tools_migration
    theory
+   daqiri-backend
    daqiri-backend-design
    usage
    examples

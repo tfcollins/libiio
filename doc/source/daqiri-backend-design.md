@@ -1,13 +1,31 @@
-# DAQIRI backend design (proposal)
+# DAQIRI backend design and roadmap
 
 ## Status and source baseline
 
-This is an implementation design, **not an available backend**. No `daqiri:` URI,
-new build option, server extension, or wire protocol described as proposed below
-exists as a result of this document. Existing network, local, USB, and serial
-backends remain unchanged. Initial scope is Linux, CPU-accessible IIO blocks,
-raw IPv4/UDP through DAQIRI's ibverbs engine, and separately scheduled control.
-A software socket profile is a correctness aid, not a performance substitute.
+This document retains the **original proposal and future acceptance gates**.
+An experimental implementation now exists in this checkout; see the
+[implemented backend guide](daqiri-backend.md) for its actual build flags,
+profile schema, callback restrictions and verification boundaries. The remaining
+sections describe design intent, not a statement that every feature is present.
+
+The current implementation differs deliberately from this proposal: it is an
+OFF-by-default **built-in backend**, not a loadable module; it owns an independent
+plain-TCP iiod connection, not a TLS transport factored from `network.c`; and it
+uses private DQI1 framing, **not VRT49 framing**. It implements a narrower CPU
+native-block callback set and strict in-order RX rather than the proposed
+reorder window. Its production adapter accepts only raw ibverbs. Real DAQIRI
+socket-engine tests use a separate test adapter and are not a production socket
+fallback or proof of full public libiio streaming integration.
+
+A matching management capability and DQI1 packet peer are prerequisites. No
+compatible production server is supplied, and **current VRT49 firmware is not
+compatible**. Raw-ibverbs hardware has **not been run/qualified**; hardware
+performance and interoperability remain open gates. Existing network, local,
+USB and serial backends remain unchanged.
+
+Exact experimental wire details, including RX extent agreement and START/STOP
+failure cleanup, belong to the matching `daqiri-wire.hpp`, `daqiri-stream.cpp`
+and test peer, not the proposed wire contract below.
 
 The design was inspected against these immutable revisions:
 
