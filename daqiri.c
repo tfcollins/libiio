@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 /* Experimental DQI1 backend. Management is an independently owned iiod
  * connection; no network backend objects or private layouts are borrowed. */
-#include "daqiri-private.h"
-#include <iio/iiod-client.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <iio/iiod-client.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -14,7 +13,11 @@
 #include <time.h>
 #include <unistd.h>
 
-struct iiod_client_pdata { int fd; };
+#include "daqiri-private.h"
+
+struct iiod_client_pdata {
+	int fd;
+};
 struct iio_context_pdata {
 	struct iiod_client_pdata io;
 	struct iiod_client *client;
@@ -28,7 +31,9 @@ struct iio_buffer_pdata {
 	struct dq_runtime *runtime;
 	struct dq_stream *stream;
 };
-struct iio_block_pdata { struct dq_block *block; };
+struct iio_block_pdata {
+	struct dq_block *block;
+};
 extern const struct iio_backend iio_daqiri_backend;
 
 static int64_t now_ms(void)
@@ -59,8 +64,8 @@ static int wait_socket(int fd, short events, int64_t deadline)
 	}
 }
 
-static ssize_t management_io(struct iiod_client_pdata *io, void *data,
-		size_t len, int timeout, bool write_data)
+static ssize_t management_io(
+		struct iiod_client_pdata *io, void *data, size_t len, int timeout, bool write_data)
 {
 	int64_t deadline = timeout < 0 ? -1 : now_ms() + timeout;
 	ssize_t ret;
@@ -71,20 +76,19 @@ static ssize_t management_io(struct iiod_client_pdata *io, void *data,
 		err = wait_socket(io->fd, write_data ? POLLOUT : POLLIN, deadline);
 		if (err)
 			return err;
-		ret = write_data ? send(io->fd, data, len, MSG_NOSIGNAL) :
-			recv(io->fd, data, len, 0);
+		ret = write_data ? send(io->fd, data, len, MSG_NOSIGNAL)
+				 : recv(io->fd, data, len, 0);
 		if (ret < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
 			continue;
 		return ret < 0 ? -errno : ret ? ret : -EPIPE;
 	}
 }
-static ssize_t management_read(struct iiod_client_pdata *io, char *dst,
-		size_t len, int timeout)
+static ssize_t management_read(struct iiod_client_pdata *io, char *dst, size_t len, int timeout)
 {
 	return management_io(io, dst, len, timeout, false);
 }
-static ssize_t management_write(struct iiod_client_pdata *io, const char *src,
-		size_t len, int timeout)
+static ssize_t management_write(
+		struct iiod_client_pdata *io, const char *src, size_t len, int timeout)
 {
 	return management_io(io, (void *)src, len, timeout, true);
 }
@@ -93,7 +97,9 @@ static void management_cancel(struct iiod_client_pdata *io)
 	shutdown(io->fd, SHUT_RDWR);
 }
 static const struct iiod_client_ops management_ops = {
-	.read = management_read, .write = management_write, .cancel = management_cancel,
+	.read = management_read,
+	.write = management_write,
+	.cancel = management_cancel,
 };
 
 static struct iio_context_pdata *device_owner(const struct iio_device *dev)
@@ -166,8 +172,8 @@ static void daqiri_shutdown(struct iio_context *ctx)
 	/* libiio owns and frees the context pdata. Buffers must be closed first. */
 }
 
-static struct iio_context *daqiri_create(const struct iio_context_params *params,
-		const char *profile)
+static struct iio_context *daqiri_create(
+		const struct iio_context_params *params, const char *profile)
 {
 	struct iio_context_pdata *p = calloc(1, sizeof(*p));
 	struct sockaddr_in address = { .sin_family = AF_INET };
@@ -192,9 +198,15 @@ static struct iio_context *daqiri_create(const struct iio_context_params *params
 	}
 	p->profile.timeout_ms = p->params.timeout_ms;
 	ret = pthread_mutex_init(&p->lock, NULL);
-	if (ret) { ret = -ret; goto free_p; }
+	if (ret) {
+		ret = -ret;
+		goto free_p;
+	}
 	p->io.fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-	if (p->io.fd < 0) { ret = -errno; goto destroy_lock; }
+	if (p->io.fd < 0) {
+		ret = -errno;
+		goto destroy_lock;
+	}
 	address.sin_port = htons(p->profile.management_port);
 	if (inet_pton(AF_INET, p->profile.management, &address.sin_addr) != 1) {
 		ret = -EINVAL;
@@ -202,23 +214,32 @@ static struct iio_context *daqiri_create(const struct iio_context_params *params
 	}
 	ret = connect(p->io.fd, (struct sockaddr *)&address, sizeof(address));
 	if (ret < 0) {
-		if (errno != EINPROGRESS) { ret = -errno; goto close_socket; }
+		if (errno != EINPROGRESS) {
+			ret = -errno;
+			goto close_socket;
+		}
 		ret = wait_socket(p->io.fd, POLLOUT, now_ms() + p->params.timeout_ms);
-		if (ret) goto close_socket;
+		if (ret)
+			goto close_socket;
 		if (getsockopt(p->io.fd, SOL_SOCKET, SO_ERROR, &error, &error_len) < 0) {
 			ret = -errno;
 			goto close_socket;
 		}
-		if (error) { ret = -error; goto close_socket; }
+		if (error) {
+			ret = -error;
+			goto close_socket;
+		}
 	}
 	p->client = iiod_client_new(&p->params, &p->io, &management_ops);
 	ret = iio_err(p->client);
-	if (ret) goto close_socket;
+	if (ret)
+		goto close_socket;
 	snprintf(uri, sizeof(uri), "daqiri:%s", profile);
 	ctx = iiod_client_create_context(p->client, &iio_daqiri_backend,
 			"DAQIRI DQI1 (experimental, CPU-only)", names, values, 1);
 	ret = iio_err(ctx);
-	if (ret) goto destroy_client;
+	if (ret)
+		goto destroy_client;
 	iio_context_set_pdata(ctx, p);
 	/* Never initialize the packet engine against a legacy/VRT-only peer. */
 	cap = iio_context_find_attr(ctx, "daqiri.protocol");
@@ -244,8 +265,8 @@ free_p:
  * record per enabled channel: ordinal:index:be:signed:bits:length:shift:repeat.
  * Order is libiio channel order. Peer must echo the entire contract exactly.
  * Only byte-addressable integer formats are supported in this first version. */
-static struct iio_buffer_pdata *daqiri_open_buffer(const struct iio_device *dev,
-		unsigned int idx, struct iio_channels_mask *mask)
+static struct iio_buffer_pdata *daqiri_open_buffer(
+		const struct iio_device *dev, unsigned int idx, struct iio_channels_mask *mask)
 {
 	struct iio_context_pdata *p = device_owner(dev);
 	struct iio_buffer_pdata *b;
@@ -271,33 +292,45 @@ static struct iio_buffer_pdata *daqiri_open_buffer(const struct iio_device *dev,
 		const struct iio_channel *ch = iio_device_get_channel(dev, i);
 		const struct iio_data_format *f;
 		int direction;
-		if (!iio_channel_is_enabled(ch, mask)) continue;
-		if (!iio_channel_is_scan_element(ch)) return iio_ptr(-EINVAL);
+		if (!iio_channel_is_enabled(ch, mask))
+			continue;
+		if (!iio_channel_is_scan_element(ch))
+			return iio_ptr(-EINVAL);
 		direction = iio_channel_is_output(ch);
-		if (tx >= 0 && tx != direction) return iio_ptr(-ENOTSUP);
+		if (tx >= 0 && tx != direction)
+			return iio_ptr(-ENOTSUP);
 		tx = direction;
 		f = iio_channel_get_data_format(ch);
-		if (!f->length || f->length % 8 || !f->bits ||
-			f->bits > f->length || f->shift > f->length - f->bits || !f->repeat)
+		if (!f->length || f->length % 8 || !f->bits || f->bits > f->length ||
+				f->shift > f->length - f->bits || !f->repeat)
 			return iio_ptr(-ENOTSUP);
 		n = snprintf(description + used, sizeof(description) - used,
-			"%u:%ld:%u:%u:%u:%u:%u:%u\n", i, iio_channel_get_index(ch),
-			(unsigned)f->is_be, (unsigned)f->is_signed,
-			f->bits, f->length, f->shift, f->repeat);
-		if (n < 0 || (size_t)n >= sizeof(description) - used) return iio_ptr(-E2BIG);
+				"%u:%ld:%u:%u:%u:%u:%u:%u\n", i, iio_channel_get_index(ch),
+				(unsigned)f->is_be, (unsigned)f->is_signed, f->bits, f->length,
+				f->shift, f->repeat);
+		if (n < 0 || (size_t)n >= sizeof(description) - used)
+			return iio_ptr(-E2BIG);
 		used += (size_t)n;
 	}
-	if (tx < 0) return iio_ptr(-EINVAL);
+	if (tx < 0)
+		return iio_ptr(-EINVAL);
 	b = calloc(1, sizeof(*b));
-	if (!b) return iio_ptr(-ENOMEM);
+	if (!b)
+		return iio_ptr(-ENOMEM);
 	b->owner = p;
 	pthread_mutex_lock(&p->lock);
-	if (p->busy) { ret = -EBUSY; goto fail; }
+	if (p->busy) {
+		ret = -EBUSY;
+		goto fail;
+	}
 	ret = dq_runtime_open(&p->profile, &b->runtime, &io);
-	if (ret) goto fail;
-	ret = dq_stream_open(&io, &p->profile, tx, (size_t)stride,
-			description, used, &b->stream);
-	if (ret) { dq_runtime_close(b->runtime); goto fail; }
+	if (ret)
+		goto fail;
+	ret = dq_stream_open(&io, &p->profile, tx, (size_t)stride, description, used, &b->stream);
+	if (ret) {
+		dq_runtime_close(b->runtime);
+		goto fail;
+	}
 	p->busy = true;
 	pthread_mutex_unlock(&p->lock);
 	return b;
@@ -320,20 +353,24 @@ static void daqiri_cancel_buffer(struct iio_buffer_pdata *b)
 {
 	dq_stream_cancel(b->stream);
 }
-static int daqiri_enable_buffer(struct iio_buffer_pdata *b, size_t samples,
-		bool enable, bool cyclic)
+static int daqiri_enable_buffer(
+		struct iio_buffer_pdata *b, size_t samples, bool enable, bool cyclic)
 {
 	(void)samples;
 	return cyclic ? -ENOTSUP : dq_stream_enable(b->stream, enable);
 }
-static struct iio_block_pdata *daqiri_create_block(struct iio_buffer_pdata *b,
-		size_t size, void **data)
+static struct iio_block_pdata *daqiri_create_block(
+		struct iio_buffer_pdata *b, size_t size, void **data)
 {
 	struct iio_block_pdata *block = calloc(1, sizeof(*block));
 	int ret;
-	if (!block) return iio_ptr(-ENOMEM);
+	if (!block)
+		return iio_ptr(-ENOMEM);
 	ret = dq_block_create(b->stream, size, &block->block, data);
-	if (ret) { free(block); return iio_ptr(ret); }
+	if (ret) {
+		free(block);
+		return iio_ptr(ret);
+	}
 	return block;
 }
 static void daqiri_free_block(struct iio_block_pdata *block)
@@ -356,21 +393,34 @@ static int daqiri_get_dmabuf_fd(struct iio_block_pdata *block)
 }
 static int daqiri_disable_cpu_access(struct iio_block_pdata *block, bool disable)
 {
-	(void)block; (void)disable;
+	(void)block;
+	(void)disable;
 	return -ENOTSUP;
 }
 static const struct iio_backend_ops daqiri_ops = {
-	.create = daqiri_create, .shutdown = daqiri_shutdown,
-	.read_attr = daqiri_read_attr, .write_attr = daqiri_write_attr,
-	.get_trigger = daqiri_get_trigger, .set_trigger = daqiri_set_trigger,
-	.set_timeout = daqiri_set_timeout, .ping = daqiri_ping,
-	.open_buffer = daqiri_open_buffer, .close_buffer = daqiri_close_buffer,
-	.enable_buffer = daqiri_enable_buffer, .cancel_buffer = daqiri_cancel_buffer,
-	.create_block = daqiri_create_block, .free_block = daqiri_free_block,
-	.enqueue_block = daqiri_enqueue_block, .dequeue_block = daqiri_dequeue_block,
-	.get_dmabuf_fd = daqiri_get_dmabuf_fd, .disable_cpu_access = daqiri_disable_cpu_access,
+	.create = daqiri_create,
+	.shutdown = daqiri_shutdown,
+	.read_attr = daqiri_read_attr,
+	.write_attr = daqiri_write_attr,
+	.get_trigger = daqiri_get_trigger,
+	.set_trigger = daqiri_set_trigger,
+	.set_timeout = daqiri_set_timeout,
+	.ping = daqiri_ping,
+	.open_buffer = daqiri_open_buffer,
+	.close_buffer = daqiri_close_buffer,
+	.enable_buffer = daqiri_enable_buffer,
+	.cancel_buffer = daqiri_cancel_buffer,
+	.create_block = daqiri_create_block,
+	.free_block = daqiri_free_block,
+	.enqueue_block = daqiri_enqueue_block,
+	.dequeue_block = daqiri_dequeue_block,
+	.get_dmabuf_fd = daqiri_get_dmabuf_fd,
+	.disable_cpu_access = daqiri_disable_cpu_access,
 };
 const struct iio_backend iio_daqiri_backend = {
-	.api_version = IIO_BACKEND_API_V1, .name = "daqiri", .uri_prefix = "daqiri:",
-	.ops = &daqiri_ops, .default_timeout_ms = 1000,
+	.api_version = IIO_BACKEND_API_V1,
+	.name = "daqiri",
+	.uri_prefix = "daqiri:",
+	.ops = &daqiri_ops,
+	.default_timeout_ms = 1000,
 };

@@ -5,6 +5,7 @@
 Requires an enabled shared library and its compiled-in, writable test profile
  directory. No DAQIRI API is mocked; packet runtime must never be initialized.
 """
+
 import argparse
 import ctypes as C
 import errno
@@ -42,9 +43,14 @@ def load_library(path):
     for name, (result, args) in signatures.items():
         fn = getattr(lib, name)
         fn.restype, fn.argtypes = result, args
-    require(b"daqiri" in [lib.iio_get_builtin_backend(i) for i in
-                          range(lib.iio_get_builtin_backends_count())],
-            "library must contain the DAQIRI backend")
+    require(
+        b"daqiri"
+        in [
+            lib.iio_get_builtin_backend(i)
+            for i in range(lib.iio_get_builtin_backends_count())
+        ],
+        "library must contain the DAQIRI backend",
+    )
     return lib
 
 
@@ -56,14 +62,19 @@ def check(lib, profiles, capability):
     listener.listen(1)
     name = "management-" + uuid.uuid4().hex
     profile = profiles / (name + ".conf")
-    attr = "" if capability is None else (
-        f'<context-attribute name="daqiri.protocol" value="{capability}"/>')
-    xml = (f'<?xml version="1.0" encoding="utf-8"?><context name="fixture" '
-           f'version-major="1" version-minor="0" version-patch="0" version-git="fixture">{attr}'
-           '<device id="iio:device0" name="fixture"><attribute name="test"/>'
-           '<channel id="voltage0" type="input"><attribute name="scale"/>'
-           '<scan-element index="0" format="le:S16/16&gt;&gt;0"/></channel>'
-           '</device></context>').encode()
+    attr = (
+        ""
+        if capability is None
+        else (f'<context-attribute name="daqiri.protocol" value="{capability}"/>')
+    )
+    xml = (
+        f'<?xml version="1.0" encoding="utf-8"?><context name="fixture" '
+        f'version-major="1" version-minor="0" version-patch="0" version-git="fixture">{attr}'
+        '<device id="iio:device0" name="fixture"><attribute name="test"/>'
+        '<channel id="voltage0" type="input"><attribute name="scale"/>'
+        '<scan-element index="0" format="le:S16/16&gt;&gt;0"/></channel>'
+        "</device></context>"
+    ).encode()
 
     def serve():
         try:
@@ -157,21 +168,29 @@ timeout_ms=1000
     require(not thread.is_alive(), "fixture did not terminate")
     require(not errors, errors)
     require(b"PRINT" in commands, "topology was not requested")
-    require(not any(cmd.startswith(b"OPEN") for cmd in commands), "legacy stream opened")
+    require(
+        not any(cmd.startswith(b"OPEN") for cmd in commands), "legacy stream opened"
+    )
     print(f"PASS capability {capability!r}: {commands}")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--library", type=Path, required=True)
-    parser.add_argument("--profile-dir", type=Path, required=True,
-                        help="must match DAQIRI_PROFILE_DIR compiled into the library")
+    parser.add_argument(
+        "--profile-dir",
+        type=Path,
+        required=True,
+        help="must match DAQIRI_PROFILE_DIR compiled into the library",
+    )
     args = parser.parse_args()
     args.profile_dir.mkdir(parents=True, exist_ok=True)
     lib = load_library(args.library)
     for capability in (None, "vrt49", CAPABILITY + "-unknown", CAPABILITY):
         check(lib, args.profile_dir, capability)
-    print("PASS registration, topology, strict capability gate, device/channel attrs and cleanup")
+    print(
+        "PASS registration, topology, strict capability gate, device/channel attrs and cleanup"
+    )
 
 
 if __name__ == "__main__":

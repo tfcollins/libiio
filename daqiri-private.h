@@ -10,18 +10,18 @@ extern "C" {
 #define DQ_HEADER 40
 #define DQ_CAPABILITY "dqi1-cpu-strict-credit-v1"
 struct dq_profile {
- char management[64], yaml[512], interface_name[64], device[128];
- char local_ip[16], peer_ip[16], peer_mac[18];
- uint16_t management_port, local_port, peer_port;
- uint32_t payload, max_block, max_blocks, timeout_ms;
+	char management[64], yaml[512], interface_name[64], device[128];
+	char local_ip[16], peer_ip[16], peer_mac[18];
+	uint16_t management_port, local_port, peer_port;
+	uint32_t payload, max_block, max_blocks, timeout_ms;
 };
 /* Packet transport: zero on send success, -EAGAIN on temporary scarcity;
  * receive returns datagram length, zero when empty, negative errno on error.
  * Both lanes must have independent queues and packet pools. */
 struct dq_io {
- void *opaque;
- int (*send)(void *, int control, const void *, size_t);
- int (*recv)(void *, int control, void *, size_t);
+	void *opaque;
+	int (*send)(void *, int control, const void *, size_t);
+	int (*recv)(void *, int control, void *, size_t);
 };
 struct dq_runtime;
 struct dq_stream;
@@ -29,8 +29,8 @@ struct dq_block;
 int dq_profile_load(const char *name, struct dq_profile *out);
 int dq_runtime_open(const struct dq_profile *, struct dq_runtime **out, struct dq_io *io);
 void dq_runtime_close(struct dq_runtime *);
-int dq_stream_open(const struct dq_io *, const struct dq_profile *, int tx,
- size_t stride, const void *description, size_t description_size, struct dq_stream **out);
+int dq_stream_open(const struct dq_io *, const struct dq_profile *, int tx, size_t stride,
+		const void *description, size_t description_size, struct dq_stream **out);
 void dq_stream_close(struct dq_stream *);
 int dq_stream_enable(struct dq_stream *, int enable);
 void dq_stream_cancel(struct dq_stream *);
