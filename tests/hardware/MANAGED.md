@@ -68,6 +68,54 @@ is a failure, not a skip. Selecting the hardware file without the launcher fails
 SIGINT/SIGTERM and the bounded run alarm unwind through cleanup; SIGKILL or host
 loss cannot be recovered by Python and require independent operator readback.
 
+## Exporter identity preflight
+
+Before any reservation, the launcher extracts the unique live
+`tron/tlab/XilinxDeviceJTAG/XilinxDeviceJTAG` resource and invokes the pinned
+JTAG driver's own host resolution and SSH prefix with **only `hostname`**.
+It requires exactly `tron`; missing/ambiguous resources, local-execution
+fallback, SSH failures, and identity mismatches fail closed with fixed,
+redacted repair guidance. It never activates a target during this probe.
+
+Read-only verification found an important distinction: Nemo's `ssh tron`
+lands on `lbvm` because `~/.ssh/config` maps it to `10.0.0.41`, but the pinned
+plugin previously resolved the resource's `extra.proxy=tron` to `tron.local`
+(DNS bare-name lookup fails), and that exact route reports `tron`. Thus the
+earlier preflight **passed**; the misleading bare SSH alias alone was not evidence
+of the prior boot failure. A subsequent read-only reproduction with the same
+installed plugin found bare-name DNS now resolves: the driver keeps `tron`, SSH
+uses its conflicting alias, and `hostname` returns `lbvm` with exit status 0.
+The current preflight therefore correctly **fails before reservation** at
+`hostname-compare`. The actual coordinator snapshot has four matching-resource
+blocks; its unique exact JTAG resource parses as a Python literal dictionary,
+with the expected class, availability, and parameter mapping. This is not a
+resource parser/schema failure.
+
+Diagnostics now distinguish `resource-query`, `resource-parse`,
+`prefix-resolution`, `ssh-exec`, and `hostname-compare`, retain numeric return
+codes and sanitized structural cause evidence, and disclose only audited
+hostnames (`tron`/`lbvm`), never arbitrary params or output. No fallback endpoint
+is attempted. Read-only verification and all 83 offline hardware-harness tests
+passed on Nemo's exact installed environment; the live preflight remains blocked
+by the hostname mismatch, as intended. The resolver keeps a bare name if DNS
+resolves it; do not force an override.
+
+At plugin commit `79072b018e696dc7637f2ee2cfeea6980d667e46`,
+`XilinxJTAGDriver._remote_binding` is `xilinxdevicejtag`; `_remote.py` selects
+`resource.host` then `extra.proxy`, tries DNS for the name then `<name>.local`,
+and builds the SSH-manager prefix. `_run_xsdb` executes that prefix.
+VRT49's conftest workaround is instead explicit `exporter:` payload paths,
+preventing Nemo's stale same-path U-Boot from shadowing the exporter file;
+it is not an SSH host override and is already mirrored here.
+
+Canonical infra `ansible/inventory/hosts.yml` identifies tron as `10.0.0.232`,
+while `HOSTS.md` identifies `10.0.0.41` as coordinator. Minimal durable repair:
+remove the conflicting Nemo `Host tron` coordinator mapping in its managed SSH
+configuration source (not located in this infra checkout), or advertise a
+validated unambiguous exporter hostname via the exporter service configuration.
+Do not change inventory's correct tron identity to match the broken SSH alias.
+No infrastructure configuration was changed and no boot was attempted.
+
 ## Offline checks (no hardware contact)
 
 ```sh
@@ -172,6 +220,52 @@ Offline regression tests:
 
 ```sh
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q \
-  tests/hardware/test_managed_offline.py tests/hardware/test_remote_offline.py
+  tests/hardware/test_managed_offline.py tests/hardware/test_remote_offline.py \
+  tests/hardware/test_managed_diagnostics.py
+```
+
+### Failure diagnostics
+
+The owner writes `failure.json` and the same redacted record to stderr. It
+records the orchestration stage, pinned plugin SHA, explicit exception causes
+(or unsuppressed contexts), source basenames/functions/line numbers, and numeric
+return codes/errno. Arbitrary exception messages, subprocess commands/output,
+serial buffers, locals and resource dumps are **withheld**, not scrubbed with a
+best-effort password regex. Only audited fixed boot-error conditions are emitted.
+Use the deepest cause and its source location against the pinned plugin; elapsed
+time alone cannot distinguish XSDB, U-Boot, Linux or shell-verification failures.
+
+The first failure is captured before cleanup so a teardown error cannot replace
+its evidence. Evidence-write failure does not bypass teardown. `cleanup.json`
+remains independent and must still be checked along with coordinator readback.
+Missing JUnit means the hardware cases were not verified; diagnostic evidence is
+not a passing hardware result. Historical runs which saved only `StrategyError`
+cannot have their destroyed in-memory exception chain reconstructed retroactively.
+
+During the boot transition, a scoped instance-only `_run` observer records the
+three exact pinned verification commands as `eth0_ipv4`, `adrv9009_phy_count`,
+and `jesd204_fsm_initialized_count`. `postboot-checks.json` (also included as
+`postboot_checks` in `failure.json`) contains their numeric `exit_status`;
+`null` means no command result was returned. Labgrid 26 discards that status
+when constructing `ExecutionError`, so observing only the exception is inadequate.
+The original `run_check` and its exception/return value remain unchanged; later
+checks still do not run after failure. The observer is restored before cleanup.
+
+Each observed result also gets three read-only, five-second-budget count probes:
+`eth0_ipv4_count`, `adrv9009_phy_count`, and
+`jesd204_fsm_initialized_count`. Only a single decimal of at most six digits is
+accepted, otherwise the value is `null`. These are subsequent snapshots, not
+qualification results (pipeline errors may also yield zero); no addresses,
+device names, dmesg lines, arbitrary commands, or output are retained. At most
+three checks are recorded. Unknown commands retain the existing redaction.
+Evidence-write/probe failures cannot turn a failed verification into success.
+
+Run the complete hardware-free regression suite:
+
+```sh
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q \
+  tests/hardware/test_managed_offline.py tests/hardware/test_remote_offline.py \
+  tests/hardware/test_managed_diagnostics.py tests/hardware/test_exporter_identity.py \
+  tests/hardware/test_postboot_diagnostics.py
 ```
 
