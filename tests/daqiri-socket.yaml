@@ -1,0 +1,29 @@
+daqiri:
+  cfg:
+    version: 1
+    stream_type: socket
+    master_core: 0
+    debug: false
+    log_level: warn
+    memory_regions:
+    - {name: DATA, kind: host, affinity: 0, num_bufs: 64, buf_size: 8192}
+    - {name: CTRL, kind: host, affinity: 0, num_bufs: 64, buf_size: 8192}
+    interfaces:
+    - name: data
+      address: 127.0.0.1
+      socket_config: {mode: server, local_addr: 'udp://127.0.0.1:25101', remote_addr: 'udp://127.0.0.1:25102', max_payload_size: 8192}
+      rx:
+        queues:
+        - {name: data_rx, id: 0, cpu_core: 0, batch_size: 1, memory_regions: [DATA]}
+      tx:
+        queues:
+        - {name: data_tx, id: 0, cpu_core: 0, batch_size: 1, memory_regions: [DATA]}
+    - name: ctrl
+      address: 127.0.0.1
+      socket_config: {mode: server, local_addr: 'udp://127.0.0.1:25111', remote_addr: 'udp://127.0.0.1:25112', max_payload_size: 8192}
+      rx:
+        queues:
+        - {name: ctrl_rx, id: 0, cpu_core: 0, batch_size: 1, memory_regions: [CTRL]}
+      tx:
+        queues:
+        - {name: ctrl_tx, id: 0, cpu_core: 0, batch_size: 1, memory_regions: [CTRL]}

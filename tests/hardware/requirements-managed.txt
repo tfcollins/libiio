@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+labgrid==26.0
+pytest==8.3.5
+labgrid-plugins @ git+https://github.com/tfcollins/labgrid-plugins@79072b018e696dc7637f2ee2cfeea6980d667e46
