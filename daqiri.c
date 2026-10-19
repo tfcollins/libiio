@@ -510,6 +510,178 @@ static int daqiri_ping(struct iio_context *ctx)
 	return iiod_client_nop(pdata->client);
 }
 
+/*
+ * framing=iiod: each buffer gets a TCP connection and iiod client of its own,
+ * exactly as ip: does (network.c), so blocking buffer I/O never stalls the
+ * management connection.
+ */
+static int dq_iiod_open_buffer(struct iio_buffer_pdata *buf, struct iio_channels_mask *mask)
+{
+	const struct iio_context_params *params =
+			iio_context_get_params(iio_device_get_context(buf->dev));
+	struct iio_context_pdata *pdata = buf->ctx;
+	struct iiod_client_pdata *io = (struct iiod_client_pdata *)&buf->iiod.io;
+	char port[sizeof(pdata->port)];
+	int ret;
+
+	if (pdata->opts.data_port)
+		iio_snprintf(port, sizeof(port), "%u", (unsigned int)pdata->opts.data_port);
+	else
+		iio_strlcpy(port, pdata->port, sizeof(port));
+
+	buf->iiod.io.params = params;
+
+	/* Logs its own errors */
+	ret = dq_mgmt_connect(&buf->iiod.io, pdata->host, port, params->timeout_ms);
+	if (ret)
+		return ret;
+
+	buf->iiod.client = iiod_client_new(params, io, &dq_mgmt_ops);
+	ret = iio_err(buf->iiod.client);
+	if (ret) {
+		dev_perror(buf->dev, ret, "Unable to create IIOD client");
+		goto err_close;
+	}
+
+	buf->iiod.pdata = iiod_client_open_buffer(
+			buf->iiod.client, pdata->client, buf->dev, buf->idx, mask);
+	ret = iio_err(buf->iiod.pdata);
+	if (ret) {
+		dev_perror(buf->dev, ret, "Unable to open buffer");
+		goto err_destroy_client;
+	}
+
+	return 0;
+
+err_destroy_client:
+	dq_mgmt_ops.cancel(io);
+	iiod_client_destroy(buf->iiod.client);
+err_close:
+	dq_mgmt_close(&buf->iiod.io);
+	return ret;
+}
+
+static struct iio_buffer_pdata *daqiri_open_buffer(
+		const struct iio_device *dev, unsigned int idx, struct iio_channels_mask *mask)
+{
+	struct iio_context_pdata *pdata = dq_dev_pdata(dev);
+	struct iio_buffer_pdata *buf;
+	int ret;
+
+	buf = zalloc(sizeof(*buf));
+	if (!buf)
+		return iio_ptr(-ENOMEM);
+
+	buf->ctx = pdata;
+	buf->dev = dev;
+	buf->idx = idx;
+	buf->framing = pdata->opts.framing;
+	buf->iiod.io.fd = -1;
+	buf->iiod.io.cancel_fd = -1;
+
+	switch (buf->framing) {
+	case DQ_FRAMING_IIOD:
+		ret = dq_iiod_open_buffer(buf, mask);
+		break;
+	case DQ_FRAMING_VRT:
+	default:
+		/* VRT streaming is not implemented yet */
+		ret = -ENOSYS;
+		break;
+	}
+
+	if (ret) {
+		free(buf);
+		return iio_ptr(ret);
+	}
+
+	return buf;
+}
+
+static void daqiri_close_buffer(struct iio_buffer_pdata *buf)
+{
+	/* The core has cancelled the buffer already */
+	iiod_client_close_buffer(buf->iiod.pdata);
+	iiod_client_destroy(buf->iiod.client);
+	dq_mgmt_close(&buf->iiod.io);
+	free(buf);
+}
+
+static int daqiri_enable_buffer(
+		struct iio_buffer_pdata *buf, size_t nb_samples, bool enable, bool cyclic)
+{
+	return iiod_client_enable_buffer(buf->iiod.pdata, nb_samples, enable, cyclic);
+}
+
+/* Wakes whatever is blocked on the buffer's connection; the connection
+ * stays unusable afterwards. */
+static void daqiri_cancel_buffer(struct iio_buffer_pdata *buf)
+{
+	dq_mgmt_ops.cancel((struct iiod_client_pdata *)&buf->iiod.io);
+}
+
+/* readbuf/writebuf: the ASCII-protocol path, used when create_block is -ENOSYS */
+static ssize_t daqiri_readbuf(struct iio_buffer_pdata *buf, void *dst, size_t len)
+{
+	return iiod_client_readbuf(buf->iiod.pdata, dst, len);
+}
+
+static ssize_t daqiri_writebuf(struct iio_buffer_pdata *buf, const void *src, size_t len)
+{
+	return iiod_client_writebuf(buf->iiod.pdata, src, len);
+}
+
+static struct iio_block_pdata *daqiri_create_block(
+		struct iio_buffer_pdata *buf, size_t size, void **data)
+{
+	struct iio_block_pdata *block, *iiod_block;
+	int ret;
+
+	/* -ENOSYS from an ASCII-only iiod makes the core malloc the block and
+	 * fall back to readbuf/writebuf */
+	iiod_block = iiod_client_create_block(buf->iiod.pdata, size, data);
+	ret = iio_err(iiod_block);
+	if (ret)
+		return iio_ptr(ret);
+
+	block = zalloc(sizeof(*block));
+	if (!block) {
+		iiod_client_free_block(iiod_block);
+		return iio_ptr(-ENOMEM);
+	}
+
+	block->buf = buf;
+	block->iiod_block = iiod_block;
+
+	return block;
+}
+
+static void daqiri_free_block(struct iio_block_pdata *block)
+{
+	iiod_client_free_block(block->iiod_block);
+	free(block);
+}
+
+static int daqiri_enqueue_block(struct iio_block_pdata *block, size_t bytes_used, bool cyclic)
+{
+	return iiod_client_enqueue_block(block->iiod_block, bytes_used, cyclic);
+}
+
+static int daqiri_dequeue_block(struct iio_block_pdata *block, bool nonblock)
+{
+	return iiod_client_dequeue_block(block->iiod_block, nonblock);
+}
+
+static int daqiri_get_dmabuf_fd(struct iio_block_pdata *block)
+{
+	return -ENOTSUP;
+}
+
+static int daqiri_disable_cpu_access(struct iio_block_pdata *block, bool disable)
+{
+	return -ENOSYS;
+}
+
 static const struct iio_backend_ops daqiri_ops = {
 	.create = daqiri_create_context,
 	.read_attr = daqiri_read_attr,
@@ -518,6 +690,22 @@ static const struct iio_backend_ops daqiri_ops = {
 	.set_trigger = daqiri_set_trigger,
 	.shutdown = daqiri_shutdown,
 	.set_timeout = daqiri_set_timeout,
+
+	.open_buffer = daqiri_open_buffer,
+	.close_buffer = daqiri_close_buffer,
+	.enable_buffer = daqiri_enable_buffer,
+	.cancel_buffer = daqiri_cancel_buffer,
+
+	.readbuf = daqiri_readbuf,
+	.writebuf = daqiri_writebuf,
+
+	.create_block = daqiri_create_block,
+	.free_block = daqiri_free_block,
+	.enqueue_block = daqiri_enqueue_block,
+	.dequeue_block = daqiri_dequeue_block,
+
+	.get_dmabuf_fd = daqiri_get_dmabuf_fd,
+	.disable_cpu_access = daqiri_disable_cpu_access,
 
 	.open_ev = daqiri_open_events_fd,
 	.close_ev = iiod_client_close_event_stream,

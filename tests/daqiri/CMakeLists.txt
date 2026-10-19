@@ -11,6 +11,15 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                 "to load the modules from the build tree")
     endif ()
 
+    # With libiio-emu.so as a module, iiod-emu crashes on attribute writes
+    # (the module calls the non-exported iio_strndup).
+    if (WITH_EMU_BACKEND_DYNAMIC)
+        message(
+            WARNING
+                "daqiri loopback tests need -DWITH_EMU_BACKEND_DYNAMIC=OFF: "
+                "iiod-emu crashes on attribute writes when emu is a module")
+    endif ()
+
     add_executable(test_daqiri_context test_daqiri_context.c)
     target_link_libraries(test_daqiri_context PRIVATE iio)
     target_include_directories(test_daqiri_context
@@ -27,6 +36,62 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
         PROPERTIES LABELS daqiri-loopback ENVIRONMENT
                    "IIOD_EMU=$<TARGET_FILE:iiod-emu>" RESOURCE_LOCK
                    iiod-emu-30431)
+
+    # iiod-emu fills a block from its .bin with at most one wrap, so a .bin
+    # shorter than a block leaves the end of the block unwritten. Serve a copy
+    # of fmcomms2.xml next to the stock cf-ad9361-lpc_buf0.bin (2019 bytes)
+    # three times over, which fills the 4096-byte blocks of the test.
+    set(EQ_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/equivalence)
+    add_custom_command(
+        OUTPUT ${EQ_FIXTURE}/fmcomms2.xml ${EQ_FIXTURE}/cf-ad9361-lpc_buf0.bin
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${EQ_FIXTURE}
+        COMMAND ${CMAKE_COMMAND} -E copy ${XMLS}/fmcomms2.xml
+                ${EQ_FIXTURE}/fmcomms2.xml
+        COMMAND
+            sh -c "cat \"$0\" \"$0\" \"$0\" > \"$1\""
+            ${XMLS}/cf-ad9361-lpc_buf0.bin ${EQ_FIXTURE}/cf-ad9361-lpc_buf0.bin
+        DEPENDS ${XMLS}/fmcomms2.xml ${XMLS}/cf-ad9361-lpc_buf0.bin
+        VERBATIM)
+    add_custom_target(
+        daqiri_equivalence_fixture DEPENDS ${EQ_FIXTURE}/fmcomms2.xml
+                                           ${EQ_FIXTURE}/cf-ad9361-lpc_buf0.bin)
+
+    find_package(Threads REQUIRED)
+    add_executable(test_block_equivalence test_block_equivalence.c)
+    target_link_libraries(test_block_equivalence PRIVATE iio Threads::Threads)
+    target_include_directories(test_block_equivalence
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+    target_compile_definitions(
+        test_block_equivalence
+        PRIVATE TESTS_DEBUG TESTS_BUF0_BIN="${XMLS}/cf-ad9361-lpc_buf0.bin")
+    add_dependencies(test_block_equivalence iio-daqiri iiod-emu
+                     daqiri_equivalence_fixture)
+
+    add_test(
+        NAME daqiri_block_equivalence
+        COMMAND
+            ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh ${EQ_FIXTURE}/fmcomms2.xml
+            $<TARGET_FILE:test_block_equivalence>)
+    set_tests_properties(
+        daqiri_block_equivalence
+        PROPERTIES LABELS daqiri-loopback ENVIRONMENT
+                   "IIOD_EMU=$<TARGET_FILE:iiod-emu>" RESOURCE_LOCK
+                   iiod-emu-30431)
+
+    # The api label, once per XML, with TESTS_API_URI pointing at daqiri:.
+    add_test(NAME daqiri_loopback_api
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_loopback.sh
+                     ${CMAKE_BINARY_DIR} ${XMLS})
+    set_tests_properties(
+        daqiri_loopback_api
+        PROPERTIES LABELS
+                   daqiri-loopback
+                   ENVIRONMENT
+                   "IIOD_EMU=$<TARGET_FILE:iiod-emu>"
+                   RESOURCE_LOCK
+                   iiod-emu-30431
+                   RUN_SERIAL
+                   TRUE)
 endif ()
 
 # VITA 49.2 prologue parser unit test: header-only, needs neither libiio's
