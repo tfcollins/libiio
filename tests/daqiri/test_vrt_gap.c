@@ -6,7 +6,7 @@
  *
  * Unit test for the DAQIRI VRT sequence/gap tracker. Packets are built in
  * memory with the golden-vector layout from gen_golden.py: IF data with SID
- * 0x01000000, Class ID (OUI 0x000456, packet class 1 = CI16), TSI UTC and a
+ * 0x01000000, Class ID (OUI 0x000456, packet class 0x0010 = vrt49 CI16), TSI UTC and a
  * TSF sample count that advances 360 per packet.
  */
 
@@ -33,7 +33,10 @@ struct pkt_opt {
 	unsigned tsf; /* 0: no fractional timestamp */
 };
 
-static const struct pkt_opt def_opt = { 1, SID, 1, 1 };
+#define PCC_CI16 0x0010
+#define PCC_REAL_INT16 0x0030
+
+static const struct pkt_opt def_opt = { 1, SID, PCC_CI16, 1 };
 
 static void put32(uint8_t *p, uint32_t v)
 {
@@ -345,7 +348,7 @@ TEST_FUNCTION(backward_step)
 
 TEST_FUNCTION(no_timestamps)
 {
-	static const struct pkt_opt nots = { 1, SID, 1, 0 };
+	static const struct pkt_opt nots = { 1, SID, PCC_CI16, 0 };
 	static const unsigned seq[] = { 0, 1, 2, 3, 4, 8 };
 	struct dq_vrt_rx rx;
 	struct dq_vrt_data d;
@@ -469,7 +472,7 @@ TEST_FUNCTION(sid_filter)
 
 TEST_FUNCTION(context)
 {
-	static const struct pkt_opt ctx = { 4, SID, 1, 1 };
+	static const struct pkt_opt ctx = { 4, SID, PCC_CI16, 1 };
 	struct dq_vrt_rx rx;
 	struct dq_vrt_data d;
 	int ret;
@@ -548,18 +551,24 @@ TEST_FUNCTION(eproto)
 	ret = feed(&rx, 0, &d);
 	TEST_ASSERT_EQ(ret, -EPROTO, "CI16 with 8: -EPROTO");
 	o = def_opt;
+	o.pclass = PCC_REAL_INT16;
+	init_rx(&rx, true, 4);
+	ret = feed_opt(&rx, &o, 0, &d);
+	TEST_ASSERT_EQ(ret, -EPROTO, "REAL_INT16 with 4: -EPROTO");
+	init_rx(&rx, true, 2);
+	ret = feed_opt(&rx, &o, 0, &d);
+	TEST_ASSERT_EQ(ret, DQ_VRT_DATA, "REAL_INT16 with 2: DATA");
+	TEST_ASSERT(rx.class_checked, "REAL_INT16 with 2: checked");
+
+	/* Other classes, 0 and the old 0x0001 included, are unchecked. */
 	o.pclass = 0;
 	init_rx(&rx, true, 4);
 	ret = feed_opt(&rx, &o, 0, &d);
-	TEST_ASSERT_EQ(ret, -EPROTO, "REAL16 with 4: -EPROTO");
+	TEST_ASSERT_EQ(ret, DQ_VRT_DATA, "class 0 with 4: DATA");
+	o.pclass = 0x0001;
 	init_rx(&rx, true, 2);
 	ret = feed_opt(&rx, &o, 0, &d);
-	TEST_ASSERT_EQ(ret, DQ_VRT_DATA, "REAL16 with 2: DATA");
-	TEST_ASSERT(rx.class_checked, "REAL16 with 2: checked");
-	o.pclass = 0x0010; /* unknown class: accepted without check */
-	init_rx(&rx, true, 4);
-	ret = feed_opt(&rx, &o, 0, &d);
-	TEST_ASSERT_EQ(ret, DQ_VRT_DATA, "other class: DATA");
+	TEST_ASSERT_EQ(ret, DQ_VRT_DATA, "class 0x0001 with 2: DATA");
 }
 
 int main(void)

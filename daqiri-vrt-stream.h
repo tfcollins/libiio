@@ -16,8 +16,9 @@
  *    first IF data packet locks rx->sid (0 for packets without a Stream ID)
  *    and later packets must carry the same value. Others: foreign++, SKIP;
  *  - format: on the first data packet that gets here, a Class ID with
- *    packet class 0x0001 (CI16) needs sample_size 4, packet class 0x0000
- *    (REAL16) needs 2, other classes or no Class ID are accepted unchecked.
+ *    packet class 0x0010 (vrt49 CI16) needs sample_size 4, packet class
+ *    0x0030 (vrt49 REAL_INT16) needs 2; any other class (0 included) or no
+ *    Class ID is accepted unchecked.
  *    Every data packet needs payload_bytes % sample_size == 0. A violation
  *    returns -EPROTO and changes no state or counter, so the next accepted
  *    packet reports the rejected ones as a gap;

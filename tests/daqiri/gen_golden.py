@@ -5,7 +5,9 @@
 Usage: gen_golden.py <outdir>
 
 Writes the *.bin vectors, manifest.json and expected.h (the C table the
-parser test compiles in) into <outdir>. Output is deterministic.
+parser test compiles in) into <outdir>. Output is deterministic. Run
+./format.sh after regenerating tests/resources/vrt so expected.h is
+clang-format clean.
 
 Payload pattern "ramp16": sample n has I = n & 0x7FFF and
 Q = (0x8000 - n) & 0xFFFF, each packed as a big-endian 16-bit word, I first.
@@ -24,7 +26,7 @@ import sys
 STREAM_ID = 0x01000000
 OUI = 0x000456
 INFO_CLASS = 0
-PACKET_CLASS = 1  # CI16
+PACKET_CLASS = 0x0010  # vrt49 CI16 (vrt49 reference/packet-classes.md)
 TSI_SECS = 1700000000
 SAMPLES = 360
 TRAILER = 0x00000000
