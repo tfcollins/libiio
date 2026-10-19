@@ -55,3 +55,42 @@ Init twice: with `PROBE_TWICE=1`, a second `daqiri_init` after `shutdown()` in
 the same process succeeds (port id `0` again, exit 0). The header documents
 that a subsequent `daqiri_init()` creates a fresh engine instance. Recorded for
 the spec only; the backend pins the engine for process lifetime.
+
+## libiio module (`WITH_DAQIRI_BACKEND`)
+
+    cmake -S . -B build-daqiri -DWITH_MODULES=ON -DWITH_DAQIRI_BACKEND=ON \
+        -DWITH_TESTS=ON -DWITH_EMU_BACKEND=ON -DWITH_IIOD_EMU=ON \
+        -DCMAKE_PREFIX_PATH=$HOME/opt/daqiri -DCUDAToolkit_ROOT=/usr/local/cuda-13.4 \
+        -DIIO_MODULES_DIR_OVERRIDE=$PWD/build-daqiri/
+    cmake --build build-daqiri -j
+    ctest --test-dir build-daqiri -L daqiri-loopback --output-on-failure
+
+The module needs Linux, `BUILD_SHARED_LIBS` and `WITH_MODULES` (configure stops
+otherwise). It enables the C++ language only; the CUDA language is not enabled,
+so no `CMAKE_CUDA_COMPILER` is needed: `find_package(CUDAToolkit)` locates the
+toolkit from `CUDAToolkit_ROOT`. `libiio.so` itself gains no C++, CUDA or
+DAQIRI dependency; only `libiio-daqiri.so` links them.
+
+`IIO_MODULES_DIR_OVERRIDE` (advanced cache variable, `WITH_MODULES` builds
+only) replaces the module directory that libiio bakes in at configure time
+(default `<libdir>/libiio/`); a missing trailing `/` is added. All modules,
+`libiio-daqiri.so`, `libiio-ip.so` and `libiio-emu.so` included, are written to
+the top of the build tree, so test builds point it there. Leave it unset for
+builds that get installed.
+
+Run-time libraries: in the build tree no `LD_LIBRARY_PATH` is needed. CMake's
+build-tree RUNPATH on `libiio-daqiri.so` covers `$HOME/opt/daqiri/lib` and the
+CUDA `lib64`, `libdaqiri.so`'s own `$ORIGIN` RUNPATH finds `libdaqiri_socket`
+and `yaml-cpp`, and on picard `libcudart`/`libcuda` also resolve through
+ldconfig; `env -u LD_LIBRARY_PATH ldd build-daqiri/libiio-daqiri.so` reports
+nothing missing. CMake drops the build RUNPATH on install, so an installed
+module needs `LD_LIBRARY_PATH=$HOME/opt/daqiri/lib` (or an ldconfig entry)
+unless DAQIRI lives in a system prefix.
+
+`tests/daqiri/with_emu.sh <xml> <cmd...>` starts `$IIOD_EMU` (CMake passes the
+built `iiod-emu`) serving `emu:<xml>` on 127.0.0.1:30431, waits up to 10 s for
+it to listen, runs the command, stops the emulator and exits with the
+command's status. It refuses to run when the port is already taken, so it
+never tests against some other server, and prints the emulator's log only on
+failure. ctest serialises the tests that use it with `RESOURCE_LOCK
+iiod-emu-30431`.
