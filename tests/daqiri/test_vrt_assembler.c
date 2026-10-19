@@ -261,6 +261,41 @@ TEST_FUNCTION(carry_overflow)
 	dq_asm_fini(&a);
 }
 
+TEST_FUNCTION(misaligned_block)
+{
+	uint8_t src[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+	static const uint8_t exp[4] = { 7, 6, 5, 4 };
+	uint8_t dst[4], odd[6], dst2[8];
+	struct dq_asm a;
+	bool done;
+	int ret;
+
+	/* Odd block size for swap16: rejected before anything is copied. */
+	memset(odd, SENTINEL, sizeof(odd));
+	dq_asm_init(&a, DQ_SWAP_16, false, 8);
+	dq_asm_attach(&a, odd, 5);
+	ret = dq_asm_push(&a, src, 2, 0, &done);
+	TEST_ASSERT_EQ(ret, -EINVAL, "size 5 swap16: -EINVAL");
+	TEST_ASSERT(all(odd, sizeof(odd), SENTINEL), "size 5: nothing written");
+	dq_asm_fini(&a);
+
+	/* swap32 with 4 bytes carried: a 6-byte block must not take half a
+	 * word of the carry; the next aligned block gets the whole word. */
+	dq_asm_init(&a, DQ_SWAP_32, false, 8);
+	dq_asm_attach(&a, dst, sizeof(dst));
+	dq_asm_push(&a, src, 8, 0, &done);
+	memset(odd, SENTINEL, sizeof(odd));
+	dq_asm_attach(&a, odd, sizeof(odd));
+	TEST_ASSERT_EQ(a.off, 0, "size 6: carry not flushed");
+	TEST_ASSERT_EQ(a.carry_len, 4, "size 6: carry kept");
+	ret = dq_asm_push(&a, src, 4, 0, &done);
+	TEST_ASSERT_EQ(ret, -EINVAL, "size 6 swap32: -EINVAL");
+	TEST_ASSERT(all(odd, sizeof(odd), SENTINEL), "size 6: nothing written");
+	dq_asm_attach(&a, dst2, sizeof(dst2));
+	TEST_ASSERT(a.off == 4 && !memcmp(dst2, exp, 4), "aligned: carry intact");
+	dq_asm_fini(&a);
+}
+
 TEST_FUNCTION(not_attached)
 {
 	uint8_t src[4] = { 0 };
@@ -284,6 +319,7 @@ int main(void)
 	RUN_TEST(gap_strict);
 	RUN_TEST(gap_lossy);
 	RUN_TEST(carry_overflow);
+	RUN_TEST(misaligned_block);
 	RUN_TEST(not_attached);
 	TEST_SUMMARY();
 }
