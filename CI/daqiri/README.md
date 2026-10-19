@@ -59,7 +59,8 @@ the spec only; the backend pins the engine for process lifetime.
 ## libiio module (`WITH_DAQIRI_BACKEND`)
 
     cmake -S . -B build-daqiri -DWITH_MODULES=ON -DWITH_DAQIRI_BACKEND=ON \
-        -DWITH_TESTS=ON -DWITH_EMU_BACKEND=ON -DWITH_IIOD_EMU=ON \
+        -DWITH_TESTS=ON -DWITH_EMU_BACKEND=ON -DWITH_EMU_BACKEND_DYNAMIC=OFF \
+        -DWITH_IIOD_EMU=ON \
         -DCMAKE_PREFIX_PATH=$HOME/opt/daqiri -DCUDAToolkit_ROOT=/usr/local/cuda-13.4 \
         -DIIO_MODULES_DIR_OVERRIDE=$PWD/build-daqiri/
     cmake --build build-daqiri -j
@@ -94,3 +95,25 @@ command's status. It refuses to run when the port is already taken, so it
 never tests against some other server, and prints the emulator's log only on
 failure. ctest serialises the tests that use it with `RESOURCE_LOCK
 iiod-emu-30431`.
+
+`-DWITH_EMU_BACKEND_DYNAMIC=OFF` builds the emu backend into `libiio.so`. As a
+module, `libiio-emu.so` calls the non-exported `iio_strndup`, and iiod-emu
+crashes on the first attribute write; `tests/daqiri/CMakeLists.txt` warns at
+configure time when the option is ON.
+
+The `daqiri-loopback` label runs:
+
+- `daqiri_context`: the management plane against `ip:`.
+- `daqiri_block_equivalence`: `cf-ad9361-lpc` voltage0+voltage1 streamed
+  through `ip:` and `daqiri:…,framing=iiod` must carry the same bytes, and
+  both context XMLs must match once the backend's own attributes are removed.
+  It also covers buffer cancel and `data_port`. iiod-emu fills a block with at
+  most one wrap of its `.bin`, so the test serves a build-tree copy of
+  `fmcomms2.xml` whose `cf-ad9361-lpc_buf0.bin` is the stock file three times
+  over (longer than a 4096-byte block).
+- `daqiri_loopback_api`: `tests/daqiri/run_loopback.sh` runs the `api` label
+  once per XML in `tests/resources/xmls/` with
+  `TESTS_API_URI=daqiri:127.0.0.1,framing=iiod`. Set
+  `DAQIRI_LOOPBACK_URI=ip:127.0.0.1` to run the same thing through `ip:` as a
+  control. Nothing is excluded: all `api` tests pass through `ip:`, as in
+  `.github/workflows/zephyr-tests.yml`.

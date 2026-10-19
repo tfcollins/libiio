@@ -63,8 +63,39 @@ struct iio_context_pdata {
 	struct dq_mgmt mgmt;
 	struct iiod_client *client;
 	struct dq_opts opts;
+	/* Resolved host and management port; framing=iiod buffers connect here */
 	char host[DQ_HOST_MAX];
 	char port[sizeof("65535")];
+};
+
+struct dq_vrt_buffer;
+struct dq_vrt_block;
+
+struct iio_buffer_pdata {
+	struct iio_context_pdata *ctx;
+	const struct iio_device *dev;
+	unsigned int idx;
+	enum dq_framing framing;
+
+	/* framing=iiod: a TCP connection of its own, as ip: does */
+	struct {
+		struct dq_mgmt io;
+		struct iiod_client *client;
+		struct iiod_client_buffer_pdata *pdata;
+	} iiod;
+
+	struct dq_vrt_buffer *vrt;
+};
+
+/*
+ * iiod_block is what iiod_client_create_block() returned: iiod-client's own
+ * struct iio_block_pdata, a different type behind the same tag. It is only
+ * ever handed back to iiod-client, never dereferenced here.
+ */
+struct iio_block_pdata {
+	struct iio_buffer_pdata *buf;
+	struct iio_block_pdata *iiod_block;
+	struct dq_vrt_block *vrt;
 };
 
 /* C++ side (daqiri-engine.cpp). Never throw; errors are negative errnos. */
