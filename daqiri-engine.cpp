@@ -20,10 +20,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <new>
-#include <set>
 #include <string>
 #include <utility>
 
@@ -34,13 +34,18 @@ struct dq_engine {
 	std::string path; /* realpath of the YAML */
 	daqiri::NetworkConfig cfg;
 	unsigned int refs = 0;
-	std::set<std::pair<int, int> > rxqs; /* (port, queue) with an owner */
+	std::map<std::pair<int, int>, struct dq_rxq *> rxqs; /* by (port, queue) */
 };
 
 struct dq_rxq {
-	dq_engine *e;
-	int port, queue;
-	unsigned int l2_offset;
+	dq_engine *e = nullptr;
+	int port = 0, queue = 0;
+	unsigned int l2_offset = 0;
+
+	/* Held across every DAQIRI call on this queue. Once the process
+	 * exits, dead is set and nothing calls into DAQIRI any more. */
+	std::mutex lock;
+	bool dead = false;
 };
 
 namespace
@@ -94,9 +99,31 @@ class quiet_info {
 	daqiri::LogSeverity saved;
 };
 
-/* Guards g_engine and its rxqs set */
+/* Guards g_engine, its rxqs and g_exiting */
 std::mutex g_lock;
 dq_engine *g_engine;
+bool g_exiting;
+
+/*
+ * At exit, DAQIRI's static destructors shut the engine down while pollers
+ * of buffers the application never closed may still be running. Registered
+ * once daqiri_init() has returned, so that it runs before every destructor
+ * DAQIRI registered until then: from here on no queue calls into DAQIRI.
+ */
+void dq_engine_atexit()
+{
+	std::lock_guard<std::mutex> lock(g_lock);
+
+	g_exiting = true;
+	if (!g_engine)
+		return;
+
+	for (auto &it : g_engine->rxqs) {
+		std::lock_guard<std::mutex> qlock(it.second->lock);
+
+		it.second->dead = true;
+	}
+}
 
 /* DAQIRI logs its init at INFO; keep that quiet unless asked for. */
 bool dq_debug()
@@ -243,6 +270,9 @@ extern "C" int dq_engine_acquire(const char *yaml, struct dq_engine **out, char 
 
 		std::lock_guard<std::mutex> lock(g_lock);
 
+		if (g_exiting)
+			return -ESHUTDOWN;
+
 		if (g_engine) {
 			if (g_engine->path != real) {
 				std::string msg = "this process runs DAQIRI from " + g_engine->path;
@@ -277,6 +307,10 @@ extern "C" int dq_engine_acquire(const char *yaml, struct dq_engine **out, char 
 			return status_to_errno(st);
 		}
 
+		/* Only fails without memory; streaming still works, only a
+		 * process exiting with a buffer open is unguarded then */
+		std::atexit(dq_engine_atexit);
+
 		e->refs = 1;
 		g_engine = e.release();
 		*out = g_engine;
@@ -295,11 +329,14 @@ extern "C" int dq_engine_acquire(const char *yaml, struct dq_engine **out, char 
 
 extern "C" void dq_engine_release(struct dq_engine *e)
 {
-	std::lock_guard<std::mutex> lock(g_lock);
+	try {
+		std::lock_guard<std::mutex> lock(g_lock);
 
-	/* No shutdown: the engine lives as long as the process */
-	if (e && e->refs)
-		e->refs--;
+		/* No shutdown: the engine lives as long as the process */
+		if (e && e->refs)
+			e->refs--;
+	} catch (...) {
+	}
 }
 
 extern "C" int dq_engine_get_port(struct dq_engine *e, const char *iface, int *port_id)
@@ -336,6 +373,9 @@ extern "C" int dq_rxq_open(struct dq_engine *e, int port_id, int queue_id, struc
 
 		std::lock_guard<std::mutex> lock(g_lock);
 
+		if (g_exiting)
+			return -ESHUTDOWN;
+
 		ifc = find_iface(e, port_id);
 		if (!ifc)
 			return -EINVAL;
@@ -351,10 +391,16 @@ extern "C" int dq_rxq_open(struct dq_engine *e, int port_id, int queue_id, struc
 				c.protocol != daqiri::SocketProtocol::UDP)
 			return -ENOTSUP;
 
-		if (!e->rxqs.emplace(port_id, queue_id).second)
+		auto key = std::make_pair(port_id, queue_id);
+		if (e->rxqs.count(key))
 			return -EBUSY;
 
-		*out = new dq_rxq{ e, port_id, queue_id, 0 };
+		auto q = std::make_unique<dq_rxq>();
+		q->e = e;
+		q->port = port_id;
+		q->queue = queue_id;
+		e->rxqs[key] = q.get();
+		*out = q.release();
 		return 0;
 	} catch (const std::bad_alloc &) {
 		return -ENOMEM;
@@ -368,10 +414,11 @@ extern "C" void dq_rxq_close(struct dq_rxq *q)
 	if (!q)
 		return;
 
-	{
+	try {
 		std::lock_guard<std::mutex> lock(g_lock);
 
 		q->e->rxqs.erase(std::make_pair(q->port, q->queue));
+	} catch (...) {
 	}
 	delete q;
 }
@@ -379,8 +426,14 @@ extern "C" void dq_rxq_close(struct dq_rxq *q)
 extern "C" int dq_rxq_poll(struct dq_rxq *q, struct dq_burst *b)
 {
 	try {
+		std::lock_guard<std::mutex> lock(q->lock);
 		daqiri::BurstParams *burst = nullptr;
-		daqiri::Status st = daqiri::get_rx_burst(&burst, q->port, q->queue);
+		daqiri::Status st;
+
+		if (q->dead)
+			return -ESHUTDOWN;
+
+		st = daqiri::get_rx_burst(&burst, q->port, q->queue);
 
 		if (st == daqiri::Status::NOT_READY || st == daqiri::Status::NULL_PTR ||
 				(st == daqiri::Status::SUCCESS && !burst))
@@ -388,6 +441,7 @@ extern "C" int dq_rxq_poll(struct dq_rxq *q, struct dq_burst *b)
 		if (st != daqiri::Status::SUCCESS)
 			return status_to_errno(st);
 
+		b->q = q;
 		b->handle = burst;
 		b->nb_pkts = (unsigned)daqiri::get_num_packets(burst);
 		b->l2_offset = q->l2_offset;
@@ -403,6 +457,11 @@ extern "C" unsigned dq_burst_pkts(const struct dq_burst *b, struct dq_pkt *out, 
 	unsigned i, n = b->nb_pkts < max ? b->nb_pkts : max;
 
 	try {
+		std::lock_guard<std::mutex> lock(b->q->lock);
+
+		if (b->q->dead)
+			return 0;
+
 		for (i = 0; i < n; i++) {
 			out[i].data = static_cast<const uint8_t *>(
 					daqiri::get_packet_ptr(burst, (int)i));
@@ -418,9 +477,14 @@ extern "C" unsigned dq_burst_pkts(const struct dq_burst *b, struct dq_pkt *out, 
 extern "C" void dq_burst_free(struct dq_burst *b)
 {
 	try {
-		if (b->handle)
-			daqiri::free_all_packets_and_burst_rx(
-					static_cast<daqiri::BurstParams *>(b->handle));
+		if (b->handle) {
+			std::lock_guard<std::mutex> lock(b->q->lock);
+
+			/* Exiting: the engine may be gone, leave the burst */
+			if (!b->q->dead)
+				daqiri::free_all_packets_and_burst_rx(
+						static_cast<daqiri::BurstParams *>(b->handle));
+		}
 	} catch (...) {
 	}
 	b->handle = nullptr;

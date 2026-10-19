@@ -397,6 +397,10 @@ static void *dq_vrt_poller(void *d)
 			continue;
 		}
 
+		/* The process is exiting: no more engine calls */
+		if (ret == -ESHUTDOWN)
+			break;
+
 		idle = 0;
 		if (ret < 0) {
 			pthread_mutex_lock(&v->lock);
