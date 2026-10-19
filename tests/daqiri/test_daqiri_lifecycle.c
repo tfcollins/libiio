@@ -579,6 +579,25 @@ TEST_FUNCTION(data_smoke)
 	CHECK_EQ(attr_ll(rx.buf, "daqiri_blocks_with_gaps"), 1, "1 block with a gap");
 	CHECK_EQ(attr_ll(rx.buf, "daqiri_last_error"), -EIO, "last error");
 
+	/* lossy=1, one-packet blocks: a sized gap past the 1024-packet fill
+	 * cap is a resync even right after a block completed. The next block
+	 * fails, the packet starts the one after, no zeros. */
+	TEST_ASSERT(attr_write(rx.buf, "daqiri_lossy", "1") > 0, "lossy on");
+	CHECK_EQ(iio_block_enqueue(b[0], 0, false), 0, "re-enqueue block 0");
+	CHECK_EQ(iio_block_enqueue(b[1], 0, false), 0, "re-enqueue block 1");
+	CHECK_EQ(iio_block_enqueue(b[2], 0, false), 0, "re-enqueue block 2");
+	CHECK_EQ(send_pkt(fd, 4, 4 * SPP, PCC_CI16), 0, "send count 4");
+	CHECK_EQ(iio_block_dequeue(b[0], false), 0, "block 0 done, no block current");
+	CHECK_EQ(send_pkt(fd, (4 + 2000) & 0xF, (4 + 2000) * SPP, PCC_CI16), 0,
+			"send the packet 2000 after count 4");
+	CHECK_EQ(iio_block_dequeue(b[1], false), -EIO, "block 1 fails: resync");
+	CHECK_EQ(iio_block_dequeue(b[2], false), 0, "block 2 done");
+	TEST_ASSERT(block_is(b[2], (4 + 2000) * SPP), "block 2 is the packet after the gap");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_lost_packets"), 1 + 1999, "1999 more lost");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_zero_filled_bytes"), 0, "nothing zero-filled");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_blocks_failed"), 2, "2 blocks failed");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_blocks_with_gaps"), 2, "2 blocks with a gap");
+
 	rx_close(&rx);
 
 	/* REAL_INT16 class on a 4-byte sample layout: stream-fatal */
