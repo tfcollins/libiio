@@ -32,7 +32,10 @@
  *
  * With comparable timestamps, d = last_frac - tsf_frac when the timestamp
  * went backwards:
- *  - 0 < d < 16 * samples_per_pkt: late (reordered), late++, SKIP;
+ *  - 0 < d < 16 * samples_per_pkt: late (reordered), late++, SKIP. Its
+ *    payload is not delivered (the block has moved on), but it did arrive:
+ *    lost_packets is decremented by one (not below 0), so lost_packets
+ *    counts packets that never arrived;
  *  - d == 0 and the 4-bit count repeats the previous one: duplicates++,
  *    SKIP. Neither touches expected_count or last_frac;
  *  - d >= 16 * samples_per_pkt (more than the 4-bit count can reorder, e.g.
@@ -53,10 +56,11 @@
  * Every gap or gap_unknown packet does gap_events++ and lost_packets += gap.
  *
  * Limitations: without comparable timestamps a repeated count is a loss of
- * 15 and a reordered packet is a loss; with them a reordered packet is
- * first counted as lost and then as late (no un-counting). A loss of 16k
- * packets without timestamps is undetectable. A gap_unknown packet may
- * report gap 0: callers must treat out->gap_unknown as a discontinuity.
+ * 15 and a reordered packet is a loss. With them a late packet un-counts
+ * one loss without checking that it fills a counted hole, so a stale
+ * re-send can hide a real loss (gap_events is never decremented). A loss
+ * of 16k packets without timestamps is undetectable. A gap_unknown packet
+ * may report gap 0: callers must treat out->gap_unknown as a discontinuity.
  */
 
 #ifndef DAQIRI_VRT_STREAM_H
