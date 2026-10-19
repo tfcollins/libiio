@@ -72,11 +72,12 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
         COMMAND
             ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh ${EQ_FIXTURE}/fmcomms2.xml
             $<TARGET_FILE:test_block_equivalence>)
+    # IIO_DAQIRI_YAML is cleared: its framing=vrt case expects no YAML.
     set_tests_properties(
         daqiri_block_equivalence
         PROPERTIES LABELS daqiri-loopback ENVIRONMENT
-                   "IIOD_EMU=$<TARGET_FILE:iiod-emu>" RESOURCE_LOCK
-                   iiod-emu-30431)
+                   "IIOD_EMU=$<TARGET_FILE:iiod-emu>;IIO_DAQIRI_YAML="
+                   RESOURCE_LOCK iiod-emu-30431)
 
     # Opens a buffer through TESTS_API_URI; run_loopback.sh runs it per XML so
     # that the api label cannot pass on buffers that never opened.
@@ -86,6 +87,28 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                                PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
     target_compile_definitions(test_daqiri_open PRIVATE TESTS_DEBUG)
     add_dependencies(test_daqiri_open iio-daqiri iiod-emu)
+
+    # framing=vrt buffer lifecycle over the DAQIRI socket engine. The engine
+    # binds UDP 127.0.0.1:25101 (see the YAML), hence the second lock.
+    add_executable(test_daqiri_lifecycle test_daqiri_lifecycle.c)
+    target_link_libraries(test_daqiri_lifecycle PRIVATE iio)
+    target_include_directories(test_daqiri_lifecycle
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+    target_compile_definitions(test_daqiri_lifecycle PRIVATE TESTS_DEBUG)
+    add_dependencies(test_daqiri_lifecycle iio-daqiri iiod-emu)
+
+    add_test(NAME daqiri_lifecycle
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh
+                     ${XMLS}/fmcomms2.xml $<TARGET_FILE:test_daqiri_lifecycle>)
+    set_tests_properties(
+        daqiri_lifecycle
+        PROPERTIES
+            LABELS
+            daqiri-loopback
+            ENVIRONMENT
+            "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml"
+            RESOURCE_LOCK
+            "iiod-emu-30431;daqiri-udp-25101")
 
     # The api label, once per XML, with TESTS_API_URI pointing at daqiri:.
     add_test(

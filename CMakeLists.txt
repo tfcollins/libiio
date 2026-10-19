@@ -892,13 +892,18 @@ if (WITH_DAQIRI_BACKEND)
     find_package(CUDAToolkit REQUIRED)
     find_package(Threads REQUIRED)
 
-    add_library(iio-daqiri SHARED daqiri.c daqiri-mgmt.c daqiri-engine.cpp)
+    add_library(
+        iio-daqiri SHARED daqiri.c daqiri-mgmt.c daqiri-vrt.c daqiri-engine.cpp
+                          $<TARGET_OBJECTS:iio_daqiri_framing>)
     target_compile_features(iio-daqiri PRIVATE cxx_std_17)
     target_link_libraries(iio-daqiri PRIVATE iio daqiri::daqiri CUDA::cudart
-                                             Threads::Threads)
+                                             Threads::Threads ${CMAKE_DL_LIBS})
+    # C11 for <stdatomic.h> in daqiri-vrt.c
     set_target_properties(
         iio-daqiri
         PROPERTIES PREFIX lib
+                   C_STANDARD 11
+                   C_STANDARD_REQUIRED ON
                    C_VISIBILITY_PRESET hidden
                    CXX_VISIBILITY_PRESET hidden)
 

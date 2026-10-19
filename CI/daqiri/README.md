@@ -111,6 +111,15 @@ The `daqiri-loopback` label runs:
   most one wrap of its `.bin`, so the test serves a build-tree copy of
   `fmcomms2.xml` whose `cf-ad9361-lpc_buf0.bin` is the stock file three times
   over (longer than a 4096-byte block).
+- `daqiri_lifecycle`: `framing=vrt` over the DAQIRI socket engine, with
+  `tests/daqiri/resources/socket-udp-loopback.yaml` (UDP server
+  `127.0.0.1:25101`, accepting only datagrams from `127.0.0.1:25102`; ctest
+  also holds `RESOURCE_LOCK daqiri-udp-25101`). Covers the block states
+  (`-EBUSY`, `-ETIMEDOUT`, `-ECANCELED`, `-EPERM`), `iio_context_destroy` with
+  a buffer open, one YAML per process (`-EBUSY`), one buffer per
+  `(port, queue)`, RX only, the `daqiri_*` buffer attributes, and a few
+  hand-built VRT packets (`-EIO` on a gap, `-EPROTO` until disabled). The
+  engine logs at WARN and above unless `IIO_DAQIRI_DEBUG` is set.
 - `daqiri_loopback_api`: `tests/daqiri/run_loopback.sh` runs the `api` label
   once per XML in `tests/resources/xmls/` with
   `TESTS_API_URI=daqiri:127.0.0.1,framing=iiod`. The api buffer tests skip

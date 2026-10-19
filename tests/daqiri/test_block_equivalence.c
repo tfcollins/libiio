@@ -513,13 +513,14 @@ out:
 		close(fd);
 }
 
-TEST_FUNCTION(vrt_framing_not_streamed)
+TEST_FUNCTION(vrt_framing_needs_yaml)
 {
 	char uri[512], *comma;
 	struct rx rx;
 	int ret;
 
-	/* Same host, default framing (vrt), which cannot stream yet */
+	/* Same host, default framing (vrt), no engine YAML: the context opens,
+	 * a buffer cannot (ctest clears IIO_DAQIRI_YAML for this test) */
 	snprintf(uri, sizeof(uri), "%s", daqiri_uri);
 	comma = strchr(uri, ',');
 	if (comma)
@@ -527,7 +528,7 @@ TEST_FUNCTION(vrt_framing_not_streamed)
 
 	ret = rx_open(&rx, uri);
 	TEST_ASSERT(rx.ctx != NULL, "framing=vrt context created");
-	TEST_ASSERT_EQ(ret, -ENOSYS, "framing=vrt buffer open is -ENOSYS");
+	TEST_ASSERT_EQ(ret, -EINVAL, "framing=vrt buffer open without yaml is -EINVAL");
 	rx_close(&rx);
 }
 
@@ -549,7 +550,7 @@ int main(void)
 	RUN_TEST(cancel_wakes_dequeue);
 	RUN_TEST(data_port_explicit);
 	RUN_TEST(data_port_refused);
-	RUN_TEST(vrt_framing_not_streamed);
+	RUN_TEST(vrt_framing_needs_yaml);
 
 	free(ref);
 
