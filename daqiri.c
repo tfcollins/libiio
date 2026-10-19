@@ -484,6 +484,10 @@ static int daqiri_refresh_format(const struct iio_channel *chn)
 	if (ret < 0)
 		return (int)ret;
 
+	/* The length is the server's reply code, not what was stored */
+	if ((size_t)ret >= sizeof(format_str))
+		return -EIO;
+
 	format_str[ret] = '\0';
 
 	ret = iio_parse_format_string(format_str, &new_format);
