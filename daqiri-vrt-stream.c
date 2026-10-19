@@ -13,8 +13,9 @@
 #include "daqiri-vrt-prologue.h"
 #include "daqiri-vrt-stream.h"
 
-#define DQ_VRT_PCC_CI16 0x0001
-#define DQ_VRT_PCC_REAL16 0x0000
+/* vrt49 packet class codes (vrt49 doc/source/reference/packet-classes.md). */
+#define DQ_VRT_PCC_CI16 0x0010
+#define DQ_VRT_PCC_REAL_INT16 0x0030
 
 void dq_vrt_rx_init(struct dq_vrt_rx *rx, const struct dq_vrt_cfg *cfg)
 {
@@ -41,7 +42,7 @@ static int dq_vrt_check_format(struct dq_vrt_rx *rx, const struct dq_vrt_prologu
 		return -EPROTO;
 	if (!rx->class_checked && p->has_class &&
 			((p->packet_class == DQ_VRT_PCC_CI16 && ss != 4) ||
-					(p->packet_class == DQ_VRT_PCC_REAL16 && ss != 2)))
+					(p->packet_class == DQ_VRT_PCC_REAL_INT16 && ss != 2)))
 		return -EPROTO;
 
 	rx->class_checked = true;
