@@ -66,19 +66,32 @@ static size_t dq_asm_unit(const struct dq_asm *a)
 
 void dq_asm_attach(struct dq_asm *a, void *dst, size_t size)
 {
-	size_t n = a->carry_len < size ? a->carry_len : size;
+	size_t z, n;
+
+	a->dst = dst;
+	a->size = size;
+	a->off = 0;
+	a->had_gap = false;
 
 	/* A misaligned block would split a swapped word: leave the carry
 	 * alone, dq_asm_push() rejects the block. */
 	if (size % dq_asm_unit(a))
-		n = 0;
+		return;
 
-	a->dst = dst;
-	a->size = size;
-	a->off = n;
-	a->had_gap = false;
+	/* Stream order: pending zeros first, then the carry. */
+	z = a->zero_pending < size ? (size_t)a->zero_pending : size;
+	if (z) {
+		memset(a->dst, 0, z);
+		a->off = z;
+		a->zero_pending -= z;
+		a->zero_filled += z;
+		a->had_gap = true;
+	}
+
+	n = a->carry_len < size - a->off ? a->carry_len : size - a->off;
 	if (n) {
-		memcpy(a->dst, a->carry, n);
+		memcpy(a->dst + a->off, a->carry, n);
+		a->off += n;
 		a->carry_len -= n;
 		memmove(a->carry, a->carry + n, a->carry_len);
 	}
@@ -88,30 +101,38 @@ int dq_asm_push(struct dq_asm *a, const uint8_t *payload, size_t len, uint32_t g
 		bool *done)
 {
 	size_t unit = dq_asm_unit(a), room, zeros = 0, n, rest;
-	uint64_t want;
+	uint64_t want = 0;
 
 	if (!a->dst || len % unit || a->size % unit)
 		return -EINVAL;
+	if (a->off == a->size)
+		return -ENOSPC;
 	if (gap_packets && !a->lossy) {
 		a->had_gap = true;
 		return -EIO;
 	}
 
-	/* Size everything first: nothing is written unless it all fits. */
+	/*
+	 * The block has room, so attach drained every pending zero and the
+	 * whole carry: both are empty here and the stream order holds. Size
+	 * everything first: nothing is written unless it all fits.
+	 */
 	room = a->size - a->off;
 	if (gap_packets) {
 		want = (uint64_t)gap_packets * len;
 		zeros = want < room ? (size_t)want : room;
 	}
+	/* Zeros still owed (want > zeros) means the block is full: n = 0. */
 	n = len < room - zeros ? len : room - zeros;
 	rest = len - n;
 	if (rest > a->carry_cap - a->carry_len)
 		return -ENOBUFS;
 
-	if (gap_packets) {
+	if (zeros) {
 		memset(a->dst + a->off, 0, zeros);
 		a->off += zeros;
 		a->zero_filled += zeros;
+		a->zero_pending += want - zeros;
 		a->had_gap = true;
 	}
 	if (n) {

@@ -148,20 +148,24 @@ TEST_FUNCTION(attach_fills_block)
 	fill(src, sizeof(src), 5);
 	dq_asm_init(&a, DQ_SWAP_NONE, false, 1024);
 	dq_asm_attach(&a, dst, sizeof(dst));
+	TEST_ASSERT(!dq_asm_done(&a), "fresh block not done");
 	dq_asm_push(&a, src, 600, 0, &done);
 	dq_asm_push(&a, src + 600, 600, 0, &done);
+	TEST_ASSERT(dq_asm_done(&a), "pushed block done");
 	dq_asm_attach(&a, small, sizeof(small));
 	TEST_ASSERT_EQ(a.off, 100, "small: filled by carry");
+	TEST_ASSERT(dq_asm_done(&a), "small: done after attach");
 	TEST_ASSERT_EQ(a.carry_len, 100, "small: carry left");
 	TEST_ASSERT(!memcmp(small, src + 1000, 100), "small: content");
 
-	/* The next push reports the block done and carries its payload. */
-	done = false;
+	/* Pushing into the full block is refused, nothing consumed. */
 	ret = dq_asm_push(&a, src + 1200, 50, 0, &done);
-	TEST_ASSERT(ret == 0 && done, "full block: push returns 0, done");
-	TEST_ASSERT_EQ(a.carry_len, 150, "full block: payload carried");
+	TEST_ASSERT_EQ(ret, -ENOSPC, "full block: -ENOSPC");
+	TEST_ASSERT_EQ(a.carry_len, 100, "full block: carry unchanged");
 	dq_asm_attach(&a, dst3, sizeof(dst3));
-	TEST_ASSERT_EQ(a.off, 150, "next block: carry flushed");
+	TEST_ASSERT_EQ(a.off, 100, "next block: carry flushed");
+	ret = dq_asm_push(&a, src + 1200, 50, 0, &done);
+	TEST_ASSERT(ret == 50 && !done, "next block: push");
 	TEST_ASSERT(!memcmp(dst3, src + 1100, 150), "next block: order kept");
 	dq_asm_fini(&a);
 }
@@ -193,7 +197,7 @@ TEST_FUNCTION(gap_strict)
 
 TEST_FUNCTION(gap_lossy)
 {
-	uint8_t src[1200], dst[1440], dst2[1440];
+	uint8_t src[1200], dst[1440], dst2[1440], dst3[1440];
 	struct dq_asm a;
 	bool done = false;
 	int ret;
@@ -206,25 +210,74 @@ TEST_FUNCTION(gap_lossy)
 	TEST_ASSERT_EQ(ret, 480, "lossy: payload written");
 	TEST_ASSERT(done, "lossy: done");
 	TEST_ASSERT_EQ(a.zero_filled, 960, "lossy: zero_filled 960");
+	TEST_ASSERT_EQ(a.zero_pending, 0, "lossy: nothing pending");
 	TEST_ASSERT(a.had_gap, "lossy: had_gap");
 	TEST_ASSERT(all(dst, 960, 0), "lossy: zeros");
 	TEST_ASSERT(!memcmp(dst + 960, src, 480), "lossy: payload after");
 
-	/* At off 1200 only 240 zero bytes fit; the payload is carried. */
+	/* Gap of 2 at off 1200: 240 zeros fill this block, 720 are owed to
+	 * the next one, ahead of the carried payload. */
 	memset(dst2, SENTINEL, sizeof(dst2));
 	dq_asm_attach(&a, dst2, sizeof(dst2));
 	TEST_ASSERT(!a.had_gap, "lossy: attach clears had_gap");
 	dq_asm_push(&a, src, 1200, 0, &done);
-	ret = dq_asm_push(&a, src, 480, 1, &done);
-	TEST_ASSERT(ret == 0 && done, "clamped: 0 written, done");
-	TEST_ASSERT_EQ(a.zero_filled, 960 + 240, "clamped: zero_filled +240");
-	TEST_ASSERT(all(dst2 + 1200, 240, 0), "clamped: zeros");
-	TEST_ASSERT_EQ(a.carry_len, 480, "clamped: payload to carry");
+	TEST_ASSERT(!a.had_gap, "lossy: no gap yet");
+	ret = dq_asm_push(&a, src, 480, 2, &done);
+	TEST_ASSERT(ret == 0 && done, "spill: 0 written, done");
+	TEST_ASSERT(a.had_gap, "spill: had_gap on first block");
+	TEST_ASSERT_EQ(a.zero_filled, 960 + 240, "spill: zero_filled +240");
+	TEST_ASSERT_EQ(a.zero_pending, 720, "spill: 720 pending");
+	TEST_ASSERT(all(dst2 + 1200, 240, 0), "spill: zeros");
+	TEST_ASSERT_EQ(a.carry_len, 480, "spill: payload to carry");
 
-	dq_asm_attach(&a, dst, sizeof(dst));
-	TEST_ASSERT_EQ(a.off, 480, "clamped: carry flushed");
-	TEST_ASSERT(!memcmp(dst, src, 480), "clamped: carry content");
-	TEST_ASSERT_EQ(a.zero_filled, 1200, "attach keeps zero_filled");
+	memset(dst3, SENTINEL, sizeof(dst3));
+	dq_asm_attach(&a, dst3, sizeof(dst3));
+	TEST_ASSERT_EQ(a.off, 720 + 480, "next: zeros then carry");
+	TEST_ASSERT(a.had_gap, "next: had_gap on second block");
+	TEST_ASSERT(all(dst3, 720, 0), "next: 720 zeros first");
+	TEST_ASSERT(!memcmp(dst3 + 720, src, 480), "next: carried payload");
+	TEST_ASSERT_EQ(a.zero_pending, 0, "next: nothing pending");
+	TEST_ASSERT_EQ(a.zero_filled, 960 + 960, "next: zero_filled total");
+	TEST_ASSERT_EQ(a.carry_len, 0, "next: carry empty");
+	TEST_ASSERT(!dq_asm_done(&a), "next: room left");
+	ret = dq_asm_push(&a, src + 480, 240, 0, &done);
+	TEST_ASSERT(ret == 240 && done, "next: filled");
+	dq_asm_fini(&a);
+}
+
+TEST_FUNCTION(gap_lossy_multi_block)
+{
+	uint8_t src[480], b1[960], b2[960], b3[960], b4[960];
+	struct dq_asm a;
+	bool done = false;
+	int ret;
+
+	/* Gap of 5 x 480 at off 480 of 960-byte blocks: 2400 zeros span
+	 * this block (480), two whole blocks (1920), then the payload. */
+	fill(src, sizeof(src), 13);
+	dq_asm_init(&a, DQ_SWAP_16, true, 960);
+	dq_asm_attach(&a, b1, sizeof(b1));
+	dq_asm_push(&a, src, 480, 0, &done);
+	ret = dq_asm_push(&a, src, 480, 5, &done);
+	TEST_ASSERT(ret == 0 && done, "multi: block 1 done by zeros");
+	TEST_ASSERT_EQ(a.zero_pending, 1920, "multi: 1920 pending");
+
+	memset(b2, SENTINEL, sizeof(b2));
+	dq_asm_attach(&a, b2, sizeof(b2));
+	TEST_ASSERT(dq_asm_done(&a) && a.had_gap, "multi: block 2 all zeros");
+	TEST_ASSERT(all(b2, sizeof(b2), 0), "multi: block 2 zeroed");
+	ret = dq_asm_push(&a, src, 480, 0, &done);
+	TEST_ASSERT_EQ(ret, -ENOSPC, "multi: push into full block");
+	dq_asm_attach(&a, b3, sizeof(b3));
+	TEST_ASSERT(dq_asm_done(&a) && a.had_gap, "multi: block 3 all zeros");
+	TEST_ASSERT_EQ(a.carry_len, 480, "multi: payload still carried");
+
+	dq_asm_attach(&a, b4, sizeof(b4));
+	TEST_ASSERT(!a.had_gap, "multi: block 4 has no zeros");
+	TEST_ASSERT_EQ(a.off, 480, "multi: block 4 starts with carry");
+	TEST_ASSERT(b4[0] == src[1] && b4[1] == src[0], "multi: carry swapped");
+	TEST_ASSERT_EQ(a.zero_filled, 2400, "multi: zero_filled 2400");
+	TEST_ASSERT_EQ(a.zero_pending, 0, "multi: drained");
 	dq_asm_fini(&a);
 }
 
@@ -256,6 +309,7 @@ TEST_FUNCTION(carry_overflow)
 	TEST_ASSERT_EQ(ret, -ENOBUFS, "lossy overflow: -ENOBUFS");
 	TEST_ASSERT(all(dst + 1200, 240, SENTINEL), "lossy overflow: no zeros");
 	TEST_ASSERT_EQ(a.zero_filled, 0, "lossy overflow: zero_filled");
+	TEST_ASSERT_EQ(a.zero_pending, 0, "lossy overflow: zero_pending");
 	TEST_ASSERT(!a.had_gap, "lossy overflow: had_gap");
 	TEST_ASSERT_EQ(a.off, 1200, "lossy overflow: off");
 	dq_asm_fini(&a);
@@ -318,6 +372,7 @@ int main(void)
 	RUN_TEST(attach_fills_block);
 	RUN_TEST(gap_strict);
 	RUN_TEST(gap_lossy);
+	RUN_TEST(gap_lossy_multi_block);
 	RUN_TEST(carry_overflow);
 	RUN_TEST(misaligned_block);
 	RUN_TEST(not_attached);
