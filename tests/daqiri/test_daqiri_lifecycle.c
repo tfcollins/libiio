@@ -19,6 +19,9 @@
  * from 127.0.0.1:25102 (the YAML's remote_addr; the engine's socket only
  * accepts that source) to check that blocks complete, fail on a gap and fail
  * for good on a layout mismatch. Loss statistics are test_vrt_loopback's.
+ *
+ * With --mixed (served float_scan_elements.xml), only the channel-length
+ * rule is checked: 16- and 32-bit channels in one buffer are -ENOTSUP.
  */
 
 #include <arpa/inet.h>
@@ -72,17 +75,13 @@ struct rx {
 /* (a)-(c) share this one */
 static struct rx shared;
 
-static void uri_for(char *dst, size_t len, const char *path)
-{
-	snprintf(dst, len, "daqiri:127.0.0.1,framing=vrt,yaml=%s", path);
-}
-
-static struct iio_context *ctx_for(const char *path)
+/* <extra>: more URI options, "" or ",key=value..." */
+static struct iio_context *ctx_opts(const char *path, const char *extra)
 {
 	struct iio_context *ctx;
-	char uri[4200];
+	char uri[4300];
 
-	uri_for(uri, sizeof(uri), path);
+	snprintf(uri, sizeof(uri), "daqiri:127.0.0.1,framing=vrt,yaml=%s%s", path, extra);
 	ctx = iio_create_context(NULL, uri);
 	if (iio_err(ctx)) {
 		printf("  %s: unable to create context: %d\n", uri, iio_err(ctx));
@@ -90,6 +89,11 @@ static struct iio_context *ctx_for(const char *path)
 	}
 
 	return ctx;
+}
+
+static struct iio_context *ctx_for(const char *path)
+{
+	return ctx_opts(path, "");
 }
 
 static void rx_close(struct rx *rx)
@@ -111,10 +115,12 @@ static void rx_destroy(struct rx *rx)
 	memset(rx, 0, sizeof(*rx));
 }
 
-/* Mask of voltage0+voltage1 of <dev_name> (outputs for the DDS), buffer 0. */
-static int rx_init(struct rx *rx, struct iio_context *ctx, const char *dev_name, bool output)
+static const char *const iq_chans[] = { "voltage0", "voltage1" };
+
+/* Mask of chans[0]+chans[1] of <dev_name> (outputs if <output>), buffer 0. */
+static int rx_init_chans(struct rx *rx, struct iio_context *ctx, const char *dev_name,
+		const char *const *chans, bool output)
 {
-	static const char *const chans[] = { "voltage0", "voltage1" };
 	const struct iio_device *dev;
 	struct iio_channel *chn;
 	unsigned int i;
@@ -142,6 +148,12 @@ static int rx_init(struct rx *rx, struct iio_context *ctx, const char *dev_name,
 	rx->buf = iio_device_get_buffer(dev, 0);
 
 	return rx->buf ? 0 : -ENODEV;
+}
+
+/* voltage0+voltage1 of <dev_name> */
+static int rx_init(struct rx *rx, struct iio_context *ctx, const char *dev_name, bool output)
+{
+	return rx_init_chans(rx, ctx, dev_name, iq_chans, output);
 }
 
 static int rx_open(struct rx *rx, unsigned int nb_blocks)
@@ -626,7 +638,36 @@ out:
 	close(fd);
 }
 
-int main(void)
+/* --mixed, against float_scan_elements.xml: float-dev voltage1 is le:F16/16,
+ * voltage2 le:f32/32, voltage5 le:q16/16 */
+TEST_FUNCTION(mixed_lengths)
+{
+	static const char *const mixed[] = { "voltage1", "voltage2" };
+	static const char *const same[] = { "voltage1", "voltage5" };
+	struct rx rx;
+	int ret;
+
+	ret = rx_init_chans(&rx, ctx_opts(yaml, ",swap=0"), "float-dev", mixed, false);
+	CHECK_EQ(ret, 0, "swap=0: 16 + 32-bit mask");
+	if (!ret)
+		CHECK_EQ(rx_open(&rx, 0), -ENOTSUP, "swap=0: mixed lengths rejected");
+	rx_destroy(&rx);
+
+	ret = rx_init_chans(&rx, ctx_for(yaml), "float-dev", mixed, false);
+	CHECK_EQ(ret, 0, "swap=1: 16 + 32-bit mask");
+	if (!ret)
+		CHECK_EQ(rx_open(&rx, 0), -ENOTSUP, "swap=1: mixed lengths rejected");
+	rx_destroy(&rx);
+
+	/* Control: the same device with two 16-bit channels opens */
+	ret = rx_init_chans(&rx, ctx_opts(yaml, ",swap=0"), "float-dev", same, false);
+	CHECK_EQ(ret, 0, "16 + 16-bit mask");
+	if (!ret)
+		CHECK_EQ(rx_open(&rx, 0), 0, "one length opens");
+	rx_destroy(&rx);
+}
+
+int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -634,6 +675,11 @@ int main(void)
 	if (!yaml || !yaml[0]) {
 		printf("DAQIRI_YAML must be the path of socket-udp-loopback.yaml\n");
 		return 1;
+	}
+
+	if (argc > 1 && !strcmp(argv[1], "--mixed")) {
+		RUN_TEST(mixed_lengths);
+		goto out;
 	}
 
 	RUN_TEST(busy_when_empty);
@@ -644,7 +690,7 @@ int main(void)
 	RUN_TEST(output_rejected);
 	RUN_TEST(counter_attrs);
 	RUN_TEST(data_smoke);
-
+out:
 	printf("test_daqiri_lifecycle: %d/%d passed, %d failed\n", test_passed, test_count,
 			test_failed);
 

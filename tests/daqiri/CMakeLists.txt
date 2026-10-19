@@ -110,6 +110,23 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
             RESOURCE_LOCK
             "iiod-emu-30431;daqiri-udp-25101")
 
+    # The channel-length rule needs a device with 16- and 32-bit channels
+    add_test(
+        NAME daqiri_lifecycle_mixed
+        COMMAND
+            ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh
+            ${XMLS}/float_scan_elements.xml
+            $<TARGET_FILE:test_daqiri_lifecycle> --mixed)
+    set_tests_properties(
+        daqiri_lifecycle_mixed
+        PROPERTIES
+            LABELS
+            daqiri-loopback
+            ENVIRONMENT
+            "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml"
+            RESOURCE_LOCK
+            "iiod-emu-30431;daqiri-udp-25101")
+
     # The api label, once per XML, with TESTS_API_URI pointing at daqiri:.
     add_test(
         NAME daqiri_loopback_api
