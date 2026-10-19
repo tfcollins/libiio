@@ -58,8 +58,8 @@ struct dq_vrt_prologue {
 
 static inline uint32_t dq_vrt_be32(const uint8_t *p)
 {
-	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
-	       ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) |
+	       (uint32_t)p[3];
 }
 
 /*
@@ -67,8 +67,7 @@ static inline uint32_t dq_vrt_be32(const uint8_t *p)
  * Returns 0 on success, -EBADMSG if the packet is truncated, inconsistent, or
  * of a type other than IF data (0/1) or context (4/5).
  */
-static inline int dq_vrt_parse(const uint8_t *p, size_t len,
-			       struct dq_vrt_prologue *out)
+static inline int dq_vrt_parse(const uint8_t *p, size_t len, struct dq_vrt_prologue *out)
 {
 	struct dq_vrt_prologue r = { 0 };
 	size_t pkt_bytes, off = 4;
@@ -80,7 +79,7 @@ static inline int dq_vrt_parse(const uint8_t *p, size_t len,
 	w0 = dq_vrt_be32(p);
 	r.type = w0 >> 28;
 	if (r.type == DQ_VRT_EXT_DATA_NOSID || r.type == DQ_VRT_EXT_DATA_SID ||
-	    r.type > DQ_VRT_EXT_CONTEXT)
+			r.type > DQ_VRT_EXT_CONTEXT)
 		return -EBADMSG;
 
 	r.has_class = (w0 >> 27) & 1;
@@ -122,8 +121,7 @@ static inline int dq_vrt_parse(const uint8_t *p, size_t len,
 	if (r.tsf) {
 		if (off + 8 > pkt_bytes)
 			return -EBADMSG;
-		r.tsf_frac = ((uint64_t)dq_vrt_be32(p + off) << 32) |
-			     dq_vrt_be32(p + off + 4);
+		r.tsf_frac = ((uint64_t)dq_vrt_be32(p + off) << 32) | dq_vrt_be32(p + off + 4);
 		off += 8;
 	}
 
@@ -131,8 +129,7 @@ static inline int dq_vrt_parse(const uint8_t *p, size_t len,
 		return -EBADMSG;
 
 	r.prologue_bytes = (unsigned int)off;
-	r.payload_bytes =
-		(unsigned int)(pkt_bytes - off - (r.has_trailer ? 4 : 0));
+	r.payload_bytes = (unsigned int)(pkt_bytes - off - (r.has_trailer ? 4 : 0));
 	*out = r;
 	return 0;
 }
