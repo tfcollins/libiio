@@ -859,6 +859,24 @@ iio_option(
     WITH_DAQIRI_BACKEND
     "Build the DAQIRI backend module (requires DAQIRI, C++17, CUDA toolkit)"
     OFF "POSIX")
+
+# DAQIRI-free VRT framing helpers (sequence tracker, block assembler). Only
+# libc: shared by the daqiri module and by its unit tests, which need neither
+# DAQIRI nor libiio.
+if (WITH_DAQIRI_BACKEND OR (WITH_TESTS AND NOT WIN32))
+    add_library(iio_daqiri_framing OBJECT daqiri-vrt-stream.c daqiri-asm.c)
+    target_include_directories(iio_daqiri_framing
+                               PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(iio_daqiri_framing PRIVATE iio_common_config)
+    set_target_properties(
+        iio_daqiri_framing
+        PROPERTIES POSITION_INDEPENDENT_CODE ON
+                   C_STANDARD 99
+                   C_STANDARD_REQUIRED ON
+                   C_EXTENSIONS OFF
+                   C_VISIBILITY_PRESET hidden)
+endif ()
+
 if (WITH_DAQIRI_BACKEND)
     if (NOT ${CMAKE_SYSTEM_NAME} MATCHES "Linux"
         OR NOT BUILD_SHARED_LIBS
