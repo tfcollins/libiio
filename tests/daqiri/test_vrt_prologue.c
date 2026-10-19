@@ -141,7 +141,7 @@ TEST_FUNCTION(rejected_types)
 		buf[0] = types[i] << 4;
 		buf[3] = 2; /* size_words */
 		TEST_ASSERT_EQ(dq_vrt_parse(buf, sizeof(buf), &p), -EBADMSG,
-			       "unsupported type rejected");
+				"unsupported type rejected");
 	}
 }
 
@@ -154,17 +154,14 @@ TEST_FUNCTION(size_checks)
 	buf[0] = 0x1C;
 	buf[1] = 0x50;
 	buf[3] = 7; /* no payload room once the trailer is counted */
-	TEST_ASSERT_EQ(dq_vrt_parse(buf, sizeof(buf), &p), -EBADMSG,
-		       "no room for trailer");
+	TEST_ASSERT_EQ(dq_vrt_parse(buf, sizeof(buf), &p), -EBADMSG, "no room for trailer");
 	buf[3] = 8;
-	TEST_ASSERT_EQ(dq_vrt_parse(buf, sizeof(buf), &p), 0,
-		       "empty payload plus trailer");
+	TEST_ASSERT_EQ(dq_vrt_parse(buf, sizeof(buf), &p), 0, "empty payload plus trailer");
 	TEST_ASSERT_EQ(p.payload_bytes, 0, "empty payload bytes");
 
 	/* size_words * 4 > len */
 	buf[3] = 11;
-	TEST_ASSERT_EQ(dq_vrt_parse(buf, sizeof(buf), &p), -EBADMSG,
-		       "size beyond buffer");
+	TEST_ASSERT_EQ(dq_vrt_parse(buf, sizeof(buf), &p), -EBADMSG, "size beyond buffer");
 	/* len < 4 */
 	TEST_ASSERT_EQ(dq_vrt_parse(buf, 3, &p), -EBADMSG, "len < 4");
 	TEST_ASSERT_EQ(dq_vrt_parse(buf, 0, &p), -EBADMSG, "len 0");
