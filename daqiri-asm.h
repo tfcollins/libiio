@@ -10,7 +10,8 @@
  * of libiio, DAQIRI and CUDA dependencies so it can be unit tested alone.
  *
  * Payload lengths and block sizes must be multiples of the swap unit (2 for
- * DQ_SWAP_16, 4 for DQ_SWAP_32) so that no swapped word straddles a block.
+ * DQ_SWAP_16, 4 for DQ_SWAP_32) so that no swapped word straddles a block;
+ * dq_asm_push() enforces both.
  * Blocks should be at least as large as the largest payload: the carry then
  * never holds more than one payload. A carry larger than the block fills
  * the block in dq_asm_attach(); the next dq_asm_push() then returns 0 with
@@ -48,6 +49,8 @@ void dq_asm_fini(struct dq_asm *a);
 /*
  * Make dst (size bytes) the current block: off = 0, had_gap = false, then
  * the carry is flushed into it (up to size bytes; any rest stays carried).
+ * A size that is not a multiple of the swap unit gets nothing flushed and
+ * every dq_asm_push() into it fails with -EINVAL.
  */
 void dq_asm_attach(struct dq_asm *a, void *dst, size_t size);
 
@@ -67,7 +70,8 @@ void dq_asm_attach(struct dq_asm *a, void *dst, size_t size);
  * Errors, all with nothing written or counted:
  *  -EIO     gap with lossy off (had_gap is set);
  *  -ENOBUFS the carry cannot take the bytes that do not fit;
- *  -EINVAL  no block attached, or len not a multiple of the swap unit.
+ *  -EINVAL  no block attached, or len or the block size not a multiple of
+ *           the swap unit.
  */
 int dq_asm_push(struct dq_asm *a, const uint8_t *payload, size_t len, uint32_t gap_packets,
 		bool *done);

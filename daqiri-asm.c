@@ -59,9 +59,19 @@ static void dq_asm_copy(uint8_t *d, const uint8_t *s, size_t n, enum dq_swap swa
 		memcpy(d + i, s + i, n - i);
 }
 
+static size_t dq_asm_unit(const struct dq_asm *a)
+{
+	return a->swap ? (size_t)a->swap : 1;
+}
+
 void dq_asm_attach(struct dq_asm *a, void *dst, size_t size)
 {
 	size_t n = a->carry_len < size ? a->carry_len : size;
+
+	/* A misaligned block would split a swapped word: leave the carry
+	 * alone, dq_asm_push() rejects the block. */
+	if (size % dq_asm_unit(a))
+		n = 0;
 
 	a->dst = dst;
 	a->size = size;
@@ -77,10 +87,10 @@ void dq_asm_attach(struct dq_asm *a, void *dst, size_t size)
 int dq_asm_push(struct dq_asm *a, const uint8_t *payload, size_t len, uint32_t gap_packets,
 		bool *done)
 {
-	size_t unit = a->swap ? (size_t)a->swap : 1, room, zeros = 0, n, rest;
+	size_t unit = dq_asm_unit(a), room, zeros = 0, n, rest;
 	uint64_t want;
 
-	if (!a->dst || len % unit)
+	if (!a->dst || len % unit || a->size % unit)
 		return -EINVAL;
 	if (gap_packets && !a->lossy) {
 		a->had_gap = true;
