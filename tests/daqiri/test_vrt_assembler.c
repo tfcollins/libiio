@@ -350,6 +350,37 @@ TEST_FUNCTION(misaligned_block)
 	dq_asm_fini(&a);
 }
 
+TEST_FUNCTION(reset)
+{
+	uint8_t src[480], b1[960], b2[960];
+	struct dq_asm a;
+	bool done = false;
+	int ret;
+
+	/* Block 1 ends in the middle of a payload and owes zeros: a reset
+	 * (overrun) drops both, keeps the counters and detaches the block. */
+	fill(src, sizeof(src), 17);
+	dq_asm_init(&a, DQ_SWAP_16, true, 960);
+	dq_asm_attach(&a, b1, sizeof(b1));
+	dq_asm_push(&a, src, 480, 0, &done);
+	ret = dq_asm_push(&a, src, 480, 3, &done);
+	TEST_ASSERT(ret == 0 && done, "reset: block 1 done by zeros");
+	TEST_ASSERT(a.zero_pending == 960 && a.carry_len == 480, "reset: zeros and carry owed");
+
+	dq_asm_reset(&a);
+	TEST_ASSERT(a.zero_pending == 0 && a.carry_len == 0, "reset: nothing owed");
+	TEST_ASSERT_EQ(a.zero_filled, 480, "reset: zero_filled kept");
+	TEST_ASSERT(!dq_asm_done(&a), "reset: detached");
+	TEST_ASSERT_EQ(dq_asm_push(&a, src, 480, 0, &done), -EINVAL, "reset: push needs attach");
+
+	memset(b2, SENTINEL, sizeof(b2));
+	dq_asm_attach(&a, b2, sizeof(b2));
+	TEST_ASSERT(a.off == 0 && !a.had_gap, "reset: next block starts empty");
+	ret = dq_asm_push(&a, src, 480, 0, &done);
+	TEST_ASSERT(ret == 480 && b2[0] == src[1] && b2[1] == src[0], "reset: next payload first");
+	dq_asm_fini(&a);
+}
+
 TEST_FUNCTION(not_attached)
 {
 	uint8_t src[4] = { 0 };
@@ -375,6 +406,7 @@ int main(void)
 	RUN_TEST(gap_lossy_multi_block);
 	RUN_TEST(carry_overflow);
 	RUN_TEST(misaligned_block);
+	RUN_TEST(reset);
 	RUN_TEST(not_attached);
 	TEST_SUMMARY();
 }

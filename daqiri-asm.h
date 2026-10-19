@@ -61,6 +61,14 @@ void dq_asm_fini(struct dq_asm *a);
  */
 void dq_asm_attach(struct dq_asm *a, void *dst, size_t size);
 
+/*
+ * Forget the stream position: drop the carry and the pending zeros and
+ * detach the current block (dq_asm_push() then needs an attach). For when
+ * what comes next no longer follows what was assembled, e.g. packets
+ * dropped because no block was queued. zero_filled is kept.
+ */
+void dq_asm_reset(struct dq_asm *a);
+
 /* True when the current block is full (possibly right after attach). */
 static inline bool dq_asm_done(const struct dq_asm *a)
 {
