@@ -97,6 +97,16 @@ void dq_asm_attach(struct dq_asm *a, void *dst, size_t size)
 	}
 }
 
+void dq_asm_reset(struct dq_asm *a)
+{
+	a->dst = NULL;
+	a->size = 0;
+	a->off = 0;
+	a->carry_len = 0;
+	a->zero_pending = 0;
+	a->had_gap = false;
+}
+
 int dq_asm_push(struct dq_asm *a, const uint8_t *payload, size_t len, uint32_t gap_packets,
 		bool *done)
 {
