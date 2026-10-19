@@ -29,6 +29,10 @@
  * burst, never while it polls the engine or sleeps.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1 /* ppoll() */
+#endif
+
 #include <errno.h>
 #include <iio/iio.h>
 #include <inttypes.h>
@@ -38,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <sys/prctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -81,7 +86,7 @@ struct dq_vrt_buffer {
 	int gpu;
 	const char *engine_kind;
 	struct dq_vrt_cfg cfg;
-	int poll_ms;
+	struct timespec poll_ts; /* idle wait: poll_us; zero never sleeps */
 
 	pthread_mutex_t lock;
 	pthread_cond_t cond; /* a block left QUEUED/FILLING */
@@ -165,13 +170,13 @@ static void dq_vrt_wake(struct dq_vrt_buffer *v)
 	}
 }
 
-/* Idle: wait for the wake fd at most poll_ms */
+/* Idle: wait for the wake fd at most poll_us (microsecond resolution) */
 static void dq_vrt_sleep(struct dq_vrt_buffer *v)
 {
 	struct pollfd pfd = { .fd = v->wake_fd, .events = POLLIN };
 	uint64_t val;
 
-	if (poll(&pfd, 1, v->poll_ms) > 0 && (pfd.revents & POLLIN)) {
+	if (ppoll(&pfd, 1, &v->poll_ts, NULL) > 0 && (pfd.revents & POLLIN)) {
 		if (read(v->wake_fd, &val, sizeof(val)) < 0) {
 			/* Nothing to drain */
 		}
@@ -377,6 +382,9 @@ static void *dq_vrt_poller(void *d)
 	struct dq_burst b;
 	int ret;
 
+	/* The default 50 us timer slack would double a 50 us idle wait */
+	prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL);
+
 	while (!atomic_load(&v->stop)) {
 		ret = dq_rxq_poll(v->q, &b);
 		if (ret == -EAGAIN) {
@@ -421,7 +429,8 @@ struct dq_vrt_buffer *dq_vrt_open(struct iio_buffer_pdata *buf, struct dq_rxq *q
 	v->mem = o->mem;
 	v->gpu = o->gpu;
 	v->engine_kind = buf->ctx->engine_kind;
-	v->poll_ms = o->poll_us >= 1000 ? (int)(o->poll_us / 1000) : 1;
+	v->poll_ts.tv_sec = (time_t)(o->poll_us / 1000000);
+	v->poll_ts.tv_nsec = (long)(o->poll_us % 1000000) * 1000L;
 	v->cfg.sid = o->sid;
 	v->cfg.sid_mask = o->sid_mask;
 	v->cfg.gap_ts = o->gap_ts;
