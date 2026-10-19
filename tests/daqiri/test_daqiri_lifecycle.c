@@ -20,6 +20,9 @@
  * accepts that source) to check that blocks complete, fail on a gap and fail
  * for good on a layout mismatch. Loss statistics are test_vrt_loopback's.
  *
+ * exit_with_open_buffer runs before (a), while this process has no engine:
+ * forked children start one each and exit with a buffer streaming.
+ *
  * With --mixed (served float_scan_elements.xml), only the channel-length
  * rule is checked: 16- and 32-bit channels in one buffer are -ENOTSUP.
  */
@@ -33,6 +36,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "test_framework.h"
@@ -241,6 +246,47 @@ static bool module_mapped(void)
 	fclose(f);
 
 	return found;
+}
+
+/* Exit (not destroy) with a buffer streaming; the child must exit cleanly */
+static void exit_child(unsigned int sleep_ms)
+{
+	struct timespec ts = { .tv_sec = 0, .tv_nsec = (long)sleep_ms * 1000000L };
+	struct rx rx;
+
+	if (rx_init(&rx, ctx_for(yaml), DEV_NAME, false) || rx_open(&rx, 2) || enqueue_all(&rx) ||
+			iio_buffer_stream_start(rx.stream))
+		_exit(100);
+
+	nanosleep(&ts, NULL);
+	exit(0);
+}
+
+/* The process has no engine yet: each child starts its own */
+TEST_FUNCTION(exit_with_open_buffer)
+{
+	unsigned int i, clean = 0;
+	int status;
+	pid_t pid;
+
+	for (i = 0; i < 20; i++) {
+		pid = fork();
+		if (pid < 0)
+			break;
+		if (!pid)
+			exit_child(20 + (i % 4) * 15);
+
+		if (waitpid(pid, &status, 0) != pid)
+			continue;
+		if (WIFEXITED(status) && !WEXITSTATUS(status))
+			clean++;
+		else if (WIFSIGNALED(status))
+			printf("  child %u: signal %d\n", i, WTERMSIG(status));
+		else
+			printf("  child %u: exit status %d\n", i, WEXITSTATUS(status));
+	}
+
+	CHECK_EQ(clean, 20, "20 children exited with status 0 while streaming");
 }
 
 /* (a) blocks queued, nothing sent: nonblocking dequeue is -EBUSY */
@@ -682,6 +728,7 @@ int main(int argc, char **argv)
 		goto out;
 	}
 
+	RUN_TEST(exit_with_open_buffer);
 	RUN_TEST(busy_when_empty);
 	RUN_TEST(cancel_fails_dequeue);
 	RUN_TEST(destroy_with_open_buffer);

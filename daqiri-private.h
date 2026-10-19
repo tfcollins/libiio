@@ -128,7 +128,8 @@ const char *dq_yaml_engine_kind(const char *path);
  * YAML acquired and never shut down before exit; acquiring another YAML
  * (compared by realpath) is -EBUSY. The first init pins this module in
  * memory so that unloading it cannot pull the code from under DAQIRI's
- * threads. Release only drops the reference.
+ * threads, and registers an exit handler after which no RX queue calls
+ * into DAQIRI (-ESHUTDOWN). Release only drops the reference.
  */
 int dq_engine_acquire(const char *yaml, struct dq_engine **out, char *err, size_t errlen);
 void dq_engine_release(struct dq_engine *e);
@@ -148,15 +149,19 @@ struct dq_pkt {
 /* One burst popped from a queue. l2_offset: bytes in front of the VRT
  * header (0 on the socket engine). */
 struct dq_burst {
+	struct dq_rxq *q;
 	void *handle;
 	unsigned nb_pkts;
 	unsigned l2_offset;
 };
 
-/* 0 with a burst to free, -EAGAIN when the queue is empty, or -errno */
+/* 0 with a burst to free, -EAGAIN when the queue is empty, -ESHUTDOWN once
+ * the process exits (stop polling), or -errno */
 int dq_rxq_poll(struct dq_rxq *q, struct dq_burst *b);
-/* Fills out[] with the first min(nb_pkts, max) packets; returns the count */
+/* Fills out[] with the first min(nb_pkts, max) packets; returns the count
+ * (0 once the process exits) */
 unsigned dq_burst_pkts(const struct dq_burst *b, struct dq_pkt *out, unsigned max);
+/* Does nothing once the process exits */
 void dq_burst_free(struct dq_burst *b);
 
 /* host: page aligned, THP advised; pinned: cudaHostAlloc (-ENOTSUP without
