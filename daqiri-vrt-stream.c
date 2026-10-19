@@ -96,7 +96,10 @@ int dq_vrt_rx_packet(
 
 	if (cmp && p.tsf_frac < rx->last_frac) {
 		if (rx->last_frac - p.tsf_frac < 16 * spp) {
+			/* It did arrive, just too late to deliver. */
 			rx->c.late++;
+			if (rx->c.lost_packets)
+				rx->c.lost_packets--;
 			return DQ_VRT_SKIP;
 		}
 		/* Too far back to be reordered: resync on this packet. */

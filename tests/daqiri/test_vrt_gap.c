@@ -303,10 +303,16 @@ TEST_FUNCTION(reorder)
 	ret = feed(&rx, 8, &d);
 	TEST_ASSERT_EQ(ret, DQ_VRT_DATA, "reorder: 8 DATA");
 	TEST_ASSERT_EQ(d.gap, 0, "reorder: 8 gap-free");
-	TEST_ASSERT_EQ(rx.c.lost_packets, 1, "reorder: lost");
+	TEST_ASSERT_EQ(rx.c.lost_packets, 0, "reorder: late 6 un-counts loss");
 	TEST_ASSERT_EQ(rx.c.gap_events, 1, "reorder: gap_events");
 	TEST_ASSERT_EQ(rx.c.late, 1, "reorder: late");
 	TEST_ASSERT_EQ(rx.c.duplicates, 0, "reorder: duplicates");
+
+	/* A stale re-send with nothing lost: late, lost stays at 0. */
+	ret = feed(&rx, 3, &d);
+	TEST_ASSERT_EQ(ret, DQ_VRT_SKIP, "stale: SKIP");
+	TEST_ASSERT_EQ(rx.c.late, 2, "stale: late");
+	TEST_ASSERT_EQ(rx.c.lost_packets, 0, "stale: lost floors at 0");
 }
 
 TEST_FUNCTION(backward_step)
