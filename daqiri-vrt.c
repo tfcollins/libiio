@@ -48,7 +48,8 @@
 #define DQ_VRT_SPIN 64
 
 /* Lossy zero-fill covers at most this many lost packets; a larger sized gap
- * is a resync instead: the current block fails with -EIO, no zeros. */
+ * is a resync instead: the current block (or, between blocks, the next one)
+ * fails with -EIO, no zeros. */
 #define DQ_VRT_MAX_FILL_PACKETS 1024
 
 /* Bytes the assembler can carry over to the next block: one UDP payload */
@@ -319,9 +320,18 @@ static void dq_vrt_packet(struct dq_vrt_buffer *v, const uint8_t *data, size_t l
 			gap = 1;
 		}
 	} else if (v->as.lossy && gap > DQ_VRT_MAX_FILL_PACKETS) {
-		/* Too large to fill: resync on this packet */
-		if (v->cur)
+		/* Too large to fill: resync on this packet. A block fails as
+		 * with lossy=0: the current one, or with none current (the gap
+		 * fell on a block boundary) the next one, attached empty after
+		 * dropping what the assembler owed. */
+		if (!v->cur) {
+			dq_asm_reset(&v->as);
+			dq_vrt_next(v);
+		}
+		if (v->cur) {
+			v->cur_gap = true;
 			dq_vrt_complete(v, -EIO);
+		}
 		dq_asm_reset(&v->as);
 		gap = 0;
 	}
