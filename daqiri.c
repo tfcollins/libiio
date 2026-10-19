@@ -709,8 +709,9 @@ err_close:
 /*
  * framing=vrt: the samples arrive as VITA 49.2 packets through the DAQIRI
  * engine, big-endian on the wire. Every enabled channel must be an input
- * scan element of 16 or 32 bits, unshifted and not repeated, all of one
- * size if they need swapping (swap=1 and the XML format is little-endian).
+ * scan element of 16 or 32 bits, unshifted and not repeated, and all of
+ * one size. They are swapped (swap=1) when the XML format is little-endian,
+ * which then must hold for all of them.
  */
 static int dq_vrt_layout(const struct iio_device *dev, const struct iio_channels_mask *mask,
 		bool swap_opt, enum dq_swap *swap, size_t *sample_size)
@@ -738,6 +739,9 @@ static int dq_vrt_layout(const struct iio_device *dev, const struct iio_channels
 		be |= fmt->is_be;
 	}
 
+	if (mixed)
+		return -ENOTSUP;
+
 	ss = iio_device_get_sample_size(dev, mask);
 	if (ss < 0)
 		return (int)ss;
@@ -748,7 +752,7 @@ static int dq_vrt_layout(const struct iio_device *dev, const struct iio_channels
 	*swap = DQ_SWAP_NONE;
 
 	if (swap_opt && le) {
-		if (mixed || be)
+		if (be)
 			return -ENOTSUP;
 		*swap = length == 16 ? DQ_SWAP_16 : DQ_SWAP_32;
 	}
