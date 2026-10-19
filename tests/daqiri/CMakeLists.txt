@@ -78,10 +78,20 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                    "IIOD_EMU=$<TARGET_FILE:iiod-emu>" RESOURCE_LOCK
                    iiod-emu-30431)
 
+    # Opens a buffer through TESTS_API_URI; run_loopback.sh runs it per XML so
+    # that the api label cannot pass on buffers that never opened.
+    add_executable(test_daqiri_open test_daqiri_open.c)
+    target_link_libraries(test_daqiri_open PRIVATE iio)
+    target_include_directories(test_daqiri_open
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+    target_compile_definitions(test_daqiri_open PRIVATE TESTS_DEBUG)
+    add_dependencies(test_daqiri_open iio-daqiri iiod-emu)
+
     # The api label, once per XML, with TESTS_API_URI pointing at daqiri:.
-    add_test(NAME daqiri_loopback_api
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_loopback.sh
-                     ${CMAKE_BINARY_DIR} ${XMLS})
+    add_test(
+        NAME daqiri_loopback_api
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_loopback.sh ${CMAKE_BINARY_DIR}
+                $<TARGET_FILE:test_daqiri_open> ${XMLS})
     set_tests_properties(
         daqiri_loopback_api
         PROPERTIES LABELS

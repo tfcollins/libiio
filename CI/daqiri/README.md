@@ -113,7 +113,11 @@ The `daqiri-loopback` label runs:
   over (longer than a 4096-byte block).
 - `daqiri_loopback_api`: `tests/daqiri/run_loopback.sh` runs the `api` label
   once per XML in `tests/resources/xmls/` with
-  `TESTS_API_URI=daqiri:127.0.0.1,framing=iiod`. Set
+  `TESTS_API_URI=daqiri:127.0.0.1,framing=iiod`. The api buffer tests skip
+  quietly when a buffer does not open, so each XML first runs
+  `test_daqiri_open`, which must open a buffer through the same URI (the
+  script lists the XMLs that have none). The script also fails when ctest
+  selects no api tests or not all of them pass. Set
   `DAQIRI_LOOPBACK_URI=ip:127.0.0.1` to run the same thing through `ip:` as a
   control. Nothing is excluded: all `api` tests pass through `ip:`, as in
   `.github/workflows/zephyr-tests.yml`.
