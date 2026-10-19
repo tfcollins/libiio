@@ -28,3 +28,19 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                    "IIOD_EMU=$<TARGET_FILE:iiod-emu>" RESOURCE_LOCK
                    iiod-emu-30431)
 endif ()
+
+# VITA 49.2 prologue parser unit test: header-only, needs neither libiio's
+# daqiri module nor the DAQIRI SDK, so it is built whenever tests are.
+if (WITH_TESTS AND NOT WIN32)
+    add_executable(test_vrt_prologue test_vrt_prologue.c)
+    target_include_directories(test_vrt_prologue
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+    target_compile_definitions(
+        test_vrt_prologue
+        PRIVATE TESTS_VRT_DIR="${CMAKE_SOURCE_DIR}/tests/resources/vrt")
+    set_target_properties(
+        test_vrt_prologue PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON
+                                     C_EXTENSIONS OFF)
+    add_test(NAME test_vrt_prologue COMMAND test_vrt_prologue)
+    set_tests_properties(test_vrt_prologue PROPERTIES LABELS daqiri)
+endif ()
