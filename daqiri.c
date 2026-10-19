@@ -5,7 +5,9 @@
  * Copyright (C) 2026 Analog Devices, Inc.
  *
  * DAQIRI backend module: daqiri:<host>[:port][,key=value]*
- * The management plane is a plain TCP iiod connection, like ip:.
+ * The management plane is a plain TCP iiod connection, like ip:. Buffers
+ * stream either through iiod as well (framing=iiod) or as VITA 49.2 packets
+ * received by the DAQIRI engine (framing=vrt, daqiri-vrt.c).
  */
 
 #include <errno.h>
@@ -39,6 +41,11 @@ static const char *const dq_mem_names[] = {
 	[DQ_MEM_PINNED] = "pinned",
 	[DQ_MEM_DEVICE] = "device",
 };
+
+const char *dq_mem_name(enum dq_mem mem)
+{
+	return dq_mem_names[mem];
+}
 
 static int dq_parse_name(const char *val, const char *const *names, unsigned int nb)
 {
@@ -268,6 +275,8 @@ static void dq_peer_addr(int fd, char *dst, size_t len, const char *fallback)
 		iio_strlcpy(dst, fallback, len);
 }
 
+static int dq_vrt_add_attrs(struct iio_context *ctx);
+
 static struct iio_context *daqiri_create_context(
 		const struct iio_context_params *params, const char *uri)
 {
@@ -300,6 +309,12 @@ static struct iio_context *daqiri_create_context(
 	pdata->mgmt.cancel_fd = -1;
 	pdata->mgmt.params = params;
 
+	ret = -pthread_mutex_init(&pdata->lock, NULL);
+	if (ret) {
+		free(pdata);
+		return iio_ptr(ret);
+	}
+
 	/* Options first, so that a bad URI fails without touching the network */
 	opts_str = strchr(uri, ',');
 	ret = dq_opts_parse(&pdata->opts, opts_str ? opts_str + 1 : NULL, params);
@@ -330,6 +345,7 @@ static struct iio_context *daqiri_create_context(
 
 		engine = dq_yaml_engine_kind(pdata->opts.yaml);
 	}
+	pdata->engine_kind = engine;
 
 	ret = dq_mgmt_connect(&pdata->mgmt, pdata->host, pdata->port, params->timeout_ms);
 	if (ret)
@@ -374,6 +390,15 @@ static struct iio_context *daqiri_create_context(
 	 * switch it to the context's copy now */
 	pdata->mgmt.params = iio_context_get_params(ctx);
 
+	if (pdata->opts.framing == DQ_FRAMING_VRT) {
+		ret = dq_vrt_add_attrs(ctx);
+		if (ret) {
+			/* Shutdown releases pdata's resources, the core frees it */
+			iio_context_destroy(ctx);
+			return iio_ptr(ret);
+		}
+	}
+
 	return ctx;
 
 err_destroy_client:
@@ -382,6 +407,7 @@ err_destroy_client:
 err_mgmt_close:
 	dq_mgmt_close(&pdata->mgmt);
 err_free_pdata:
+	pthread_mutex_destroy(&pdata->lock);
 	free(pdata);
 	return iio_ptr(ret);
 }
@@ -391,18 +417,119 @@ static struct iio_context_pdata *dq_dev_pdata(const struct iio_device *dev)
 	return iio_context_get_pdata(iio_device_get_context(dev));
 }
 
+/*
+ * framing=vrt: the daqiri_* counters are attributes of every input buffer,
+ * served here rather than by iiod. Only VRT contexts get them, so that a
+ * framing=iiod context describes exactly what ip: does.
+ */
+static int dq_vrt_add_attrs(struct iio_context *ctx)
+{
+	unsigned int i, j, k;
+	struct iio_buffer *buf;
+	struct iio_device *dev;
+	int ret;
+
+	for (i = 0; i < iio_context_get_devices_count(ctx); i++) {
+		dev = iio_context_get_device(ctx, i);
+
+		for (j = 0; j < iio_device_get_buffers_count(dev); j++) {
+			buf = iio_device_get_buffer(dev, j);
+			if (iio_buffer_is_output(buf))
+				continue;
+
+			for (k = 0; k < dq_vrt_nb_attrs; k++) {
+				ret = iio_buffer_add_attr(buf, dq_vrt_attr_names[k]);
+				if (ret)
+					return ret;
+			}
+		}
+	}
+
+	return 0;
+}
+
+static bool dq_is_vrt_attr(const struct iio_context_pdata *pdata, const struct iio_attr *attr)
+{
+	return pdata->opts.framing == DQ_FRAMING_VRT && attr->type == IIO_ATTR_TYPE_BUFFER &&
+	       !strncmp(attr->name, "daqiri_", sizeof("daqiri_") - 1);
+}
+
+/* The open VRT buffer behind a buffer attribute; call with pdata->lock */
+static struct iio_buffer_pdata *dq_vrt_find(
+		struct iio_context_pdata *pdata, const struct iio_attr *attr)
+{
+	struct iio_buffer_pdata *b;
+
+	for (b = pdata->vrt_bufs; b; b = b->next)
+		if (iio_device_get_buffer(b->dev, b->idx) == attr->iio.buf)
+			return b;
+
+	return NULL;
+}
+
+static ssize_t dq_vrt_attr_read(
+		struct iio_context_pdata *pdata, const struct iio_attr *attr, char *dst, size_t len)
+{
+	const char *val = "0";
+	struct iio_buffer_pdata *b;
+	ssize_t ret;
+
+	pthread_mutex_lock(&pdata->lock);
+	b = dq_vrt_find(pdata, attr);
+	if (b) {
+		ret = dq_vrt_read_attr(b->vrt, attr->name, dst, len);
+		pthread_mutex_unlock(&pdata->lock);
+		return ret;
+	}
+	pthread_mutex_unlock(&pdata->lock);
+
+	/* No stream open: what one would start with */
+	if (!strcmp(attr->name, "daqiri_mem_domain"))
+		val = dq_mem_name(pdata->opts.mem);
+	else if (!strcmp(attr->name, "daqiri_engine_kind"))
+		val = "none";
+	else if (!strcmp(attr->name, "daqiri_lossy"))
+		val = pdata->opts.lossy ? "1" : "0";
+
+	if (iio_strlcpy(dst, val, len) >= len)
+		return -ENOSPC;
+
+	return (ssize_t)strlen(val) + 1;
+}
+
+static ssize_t dq_vrt_attr_write(struct iio_context_pdata *pdata, const struct iio_attr *attr,
+		const char *src, size_t len)
+{
+	struct iio_buffer_pdata *b;
+	int ret = -EBADF; /* only an open stream has a daqiri_lossy */
+
+	pthread_mutex_lock(&pdata->lock);
+	b = dq_vrt_find(pdata, attr);
+	if (b)
+		ret = dq_vrt_write_attr(b->vrt, attr->name, src, len);
+	pthread_mutex_unlock(&pdata->lock);
+
+	return ret ? ret : (ssize_t)len;
+}
+
 static ssize_t daqiri_read_attr(const struct iio_attr *attr, char *dst, size_t len)
 {
-	const struct iio_device *dev = iio_attr_get_device(attr);
+	struct iio_context_pdata *pdata = dq_dev_pdata(iio_attr_get_device(attr));
 
-	return iiod_client_attr_read(dq_dev_pdata(dev)->client, attr, dst, len);
+	if (dq_is_vrt_attr(pdata, attr))
+		return dq_vrt_attr_read(pdata, attr, dst, len);
+
+	return iiod_client_attr_read(pdata->client, attr, dst, len);
 }
 
 static ssize_t daqiri_write_attr(const struct iio_attr *attr, const char *src, size_t len)
 {
-	const struct iio_device *dev = iio_attr_get_device(attr);
+	struct iio_context_pdata *pdata = dq_dev_pdata(iio_attr_get_device(attr));
 
-	return iiod_client_attr_write(dq_dev_pdata(dev)->client, attr, src, len);
+	if (dq_is_vrt_attr(pdata, attr))
+		return dq_vrt_attr_write(pdata, attr, src, len);
+
+	return iiod_client_attr_write(pdata->client, attr, src, len);
 }
 
 static const struct iio_device *daqiri_get_trigger(const struct iio_device *dev)
@@ -415,9 +542,27 @@ static int daqiri_set_trigger(const struct iio_device *dev, const struct iio_dev
 	return iiod_client_set_trigger(dq_dev_pdata(dev)->client, dev, trigger);
 }
 
+static void dq_vrt_close_buffer(struct iio_buffer_pdata *buf)
+{
+	dq_vrt_close(buf->vrt);
+	dq_rxq_close(buf->rxq);
+	free(buf);
+}
+
 static void daqiri_shutdown(struct iio_context *ctx)
 {
 	struct iio_context_pdata *pdata = iio_context_get_pdata(ctx);
+	struct iio_buffer_pdata *buf;
+
+	/* VRT buffers the app left open: join their pollers and give their
+	 * queues back; the app can no longer reach them past this point. */
+	while ((buf = pdata->vrt_bufs)) {
+		pdata->vrt_bufs = buf->next;
+		dq_vrt_close_buffer(buf);
+	}
+	if (pdata->engine)
+		dq_engine_release(pdata->engine);
+	pthread_mutex_destroy(&pdata->lock);
 
 	/* The core frees pdata itself after this returns */
 	dq_mgmt_ops.cancel((struct iiod_client_pdata *)&pdata->mgmt);
@@ -561,6 +706,120 @@ err_close:
 	return ret;
 }
 
+/*
+ * framing=vrt: the samples arrive as VITA 49.2 packets through the DAQIRI
+ * engine, big-endian on the wire. Every enabled channel must be an input
+ * scan element of 16 or 32 bits, unshifted and not repeated, all of one
+ * size if they need swapping (swap=1 and the XML format is little-endian).
+ */
+static int dq_vrt_layout(const struct iio_device *dev, const struct iio_channels_mask *mask,
+		bool swap_opt, enum dq_swap *swap, size_t *sample_size)
+{
+	unsigned int i, length = 0;
+	bool mixed = false, le = false, be = false;
+	const struct iio_data_format *fmt;
+	const struct iio_channel *chn;
+	ssize_t ss;
+
+	for (i = 0; i < iio_device_get_channels_count(dev); i++) {
+		chn = iio_device_get_channel(dev, i);
+		if (!iio_channel_is_enabled(chn, mask))
+			continue;
+
+		fmt = iio_channel_get_data_format(chn);
+		if (!iio_channel_is_scan_element(chn) || iio_channel_is_output(chn) ||
+				(fmt->length != 16 && fmt->length != 32) || fmt->repeat != 1 ||
+				fmt->shift)
+			return -ENOTSUP;
+
+		mixed |= length && length != fmt->length;
+		length = fmt->length;
+		le |= !fmt->is_be;
+		be |= fmt->is_be;
+	}
+
+	ss = iio_device_get_sample_size(dev, mask);
+	if (ss < 0)
+		return (int)ss;
+	if (!ss)
+		return -EINVAL;
+
+	*sample_size = (size_t)ss;
+	*swap = DQ_SWAP_NONE;
+
+	if (swap_opt && le) {
+		if (mixed || be)
+			return -ENOTSUP;
+		*swap = length == 16 ? DQ_SWAP_16 : DQ_SWAP_32;
+	}
+
+	return 0;
+}
+
+static int dq_vrt_open_buffer(struct iio_buffer_pdata *buf, struct iio_channels_mask *mask)
+{
+	struct iio_context_pdata *pdata = buf->ctx;
+	const struct dq_opts *o = &pdata->opts;
+	size_t sample_size;
+	enum dq_swap swap;
+	int port, ret;
+	char err[256];
+
+	if (iio_buffer_is_output(iio_device_get_buffer(buf->dev, buf->idx))) {
+		dev_err(buf->dev, "framing=vrt is receive only\n");
+		return -ENOTSUP;
+	}
+	if (o->mem == DQ_MEM_DEVICE) {
+		dev_err(buf->dev, "mem=device needs a raw engine (not in this version)\n");
+		return -ENOTSUP;
+	}
+	if (!o->yaml[0]) {
+		dev_err(buf->dev, "framing=vrt needs yaml= or IIO_DAQIRI_YAML\n");
+		return -EINVAL;
+	}
+
+	ret = dq_vrt_layout(buf->dev, mask, o->swap, &swap, &sample_size);
+	if (ret) {
+		dev_perror(buf->dev, ret, "Channel layout unsupported by framing=vrt");
+		return ret;
+	}
+
+	pthread_mutex_lock(&pdata->lock);
+	ret = pdata->engine ? 0 : dq_engine_acquire(o->yaml, &pdata->engine, err, sizeof(err));
+	pthread_mutex_unlock(&pdata->lock);
+	if (ret) {
+		dev_perror(buf->dev, ret, "Unable to start the DAQIRI engine");
+		dev_err(buf->dev, "%s: %s\n", o->yaml, err);
+		return ret;
+	}
+
+	ret = dq_engine_get_port(pdata->engine, o->iface, &port);
+	if (ret) {
+		dev_err(buf->dev, "No interface '%s' in %s\n", o->iface, o->yaml);
+		return ret;
+	}
+
+	ret = dq_rxq_open(pdata->engine, port, o->rxq, &buf->rxq);
+	if (ret) {
+		dev_perror(buf->dev, ret, "Unable to open RX queue");
+		return ret;
+	}
+
+	buf->vrt = dq_vrt_open(buf, buf->rxq, o, swap, sample_size);
+	ret = iio_err(buf->vrt);
+	if (ret) {
+		dq_rxq_close(buf->rxq);
+		return ret;
+	}
+
+	pthread_mutex_lock(&pdata->lock);
+	buf->next = pdata->vrt_bufs;
+	pdata->vrt_bufs = buf;
+	pthread_mutex_unlock(&pdata->lock);
+
+	return 0;
+}
+
 static struct iio_buffer_pdata *daqiri_open_buffer(
 		const struct iio_device *dev, unsigned int idx, struct iio_channels_mask *mask)
 {
@@ -585,8 +844,7 @@ static struct iio_buffer_pdata *daqiri_open_buffer(
 		break;
 	case DQ_FRAMING_VRT:
 	default:
-		/* VRT streaming is not implemented yet */
-		ret = -ENOSYS;
+		ret = dq_vrt_open_buffer(buf, mask);
 		break;
 	}
 
@@ -600,6 +858,23 @@ static struct iio_buffer_pdata *daqiri_open_buffer(
 
 static void daqiri_close_buffer(struct iio_buffer_pdata *buf)
 {
+	struct iio_context_pdata *pdata = buf->ctx;
+	struct iio_buffer_pdata **p;
+
+	if (buf->framing == DQ_FRAMING_VRT) {
+		pthread_mutex_lock(&pdata->lock);
+		for (p = &pdata->vrt_bufs; *p; p = &(*p)->next) {
+			if (*p == buf) {
+				*p = buf->next;
+				break;
+			}
+		}
+		pthread_mutex_unlock(&pdata->lock);
+
+		dq_vrt_close_buffer(buf);
+		return;
+	}
+
 	/* The core has cancelled the buffer already */
 	iiod_client_close_buffer(buf->iiod.pdata);
 	iiod_client_destroy(buf->iiod.client);
@@ -610,24 +885,37 @@ static void daqiri_close_buffer(struct iio_buffer_pdata *buf)
 static int daqiri_enable_buffer(
 		struct iio_buffer_pdata *buf, size_t nb_samples, bool enable, bool cyclic)
 {
+	if (buf->framing == DQ_FRAMING_VRT)
+		return dq_vrt_enable(buf->vrt, enable);
+
 	return iiod_client_enable_buffer(buf->iiod.pdata, nb_samples, enable, cyclic);
 }
 
-/* Wakes whatever is blocked on the buffer's connection; the connection
- * stays unusable afterwards. */
+/* Wakes whatever is blocked on the buffer; with framing=iiod the
+ * connection stays unusable afterwards, with framing=vrt the stream. */
 static void daqiri_cancel_buffer(struct iio_buffer_pdata *buf)
 {
-	dq_mgmt_ops.cancel((struct iiod_client_pdata *)&buf->iiod.io);
+	if (buf->framing == DQ_FRAMING_VRT)
+		dq_vrt_cancel(buf->vrt);
+	else
+		dq_mgmt_ops.cancel((struct iiod_client_pdata *)&buf->iiod.io);
 }
 
-/* readbuf/writebuf: the ASCII-protocol path, used when create_block is -ENOSYS */
+/* readbuf/writebuf: the ASCII-protocol path, used when create_block is
+ * -ENOSYS; VRT blocks are always native */
 static ssize_t daqiri_readbuf(struct iio_buffer_pdata *buf, void *dst, size_t len)
 {
+	if (buf->framing == DQ_FRAMING_VRT)
+		return -ENOSYS;
+
 	return iiod_client_readbuf(buf->iiod.pdata, dst, len);
 }
 
 static ssize_t daqiri_writebuf(struct iio_buffer_pdata *buf, const void *src, size_t len)
 {
+	if (buf->framing == DQ_FRAMING_VRT)
+		return -ENOSYS;
+
 	return iiod_client_writebuf(buf->iiod.pdata, src, len);
 }
 
@@ -635,7 +923,25 @@ static struct iio_block_pdata *daqiri_create_block(
 		struct iio_buffer_pdata *buf, size_t size, void **data)
 {
 	struct iio_block_pdata *block, *iiod_block;
+	struct dq_vrt_block *vrt;
 	int ret;
+
+	if (buf->framing == DQ_FRAMING_VRT) {
+		block = zalloc(sizeof(*block));
+		if (!block)
+			return iio_ptr(-ENOMEM);
+
+		vrt = dq_vrt_block_new(buf->vrt, size, data);
+		ret = iio_err(vrt);
+		if (ret) {
+			free(block);
+			return iio_ptr(ret);
+		}
+
+		block->buf = buf;
+		block->vrt = vrt;
+		return block;
+	}
 
 	/* -ENOSYS from an ASCII-only iiod makes the core malloc the block and
 	 * fall back to readbuf/writebuf */
@@ -658,17 +964,35 @@ static struct iio_block_pdata *daqiri_create_block(
 
 static void daqiri_free_block(struct iio_block_pdata *block)
 {
-	iiod_client_free_block(block->iiod_block);
+	if (block->vrt)
+		dq_vrt_block_free(block->buf->vrt, block->vrt);
+	else
+		iiod_client_free_block(block->iiod_block);
 	free(block);
 }
 
 static int daqiri_enqueue_block(struct iio_block_pdata *block, size_t bytes_used, bool cyclic)
 {
+	if (block->vrt) {
+		/* No cyclic RX */
+		if (cyclic)
+			return -ENOTSUP;
+		return dq_vrt_enqueue(block->buf->vrt, block->vrt, bytes_used);
+	}
+
 	return iiod_client_enqueue_block(block->iiod_block, bytes_used, cyclic);
 }
 
 static int daqiri_dequeue_block(struct iio_block_pdata *block, bool nonblock)
 {
+	const struct iio_context_params *params;
+
+	if (block->vrt) {
+		/* Read every time: iio_context_set_timeout() may change it */
+		params = iio_context_get_params(iio_device_get_context(block->buf->dev));
+		return dq_vrt_dequeue(block->buf->vrt, block->vrt, nonblock, params->timeout_ms);
+	}
+
 	return iiod_client_dequeue_block(block->iiod_block, nonblock);
 }
 
