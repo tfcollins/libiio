@@ -127,6 +127,37 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
             RESOURCE_LOCK
             "iiod-emu-30431;daqiri-udp-25101")
 
+    # Standalone VITA 49.2 software framer (libc only; sendmmsg and
+    # clock_nanosleep make it Linux-only, hence here and not with the unit tests)
+    add_executable(vrt_sender vrt_sender.c)
+    set_target_properties(
+        vrt_sender
+        PROPERTIES C_STANDARD 99
+                   C_STANDARD_REQUIRED ON
+                   C_EXTENSIONS OFF)
+
+    # framing=vrt end to end: vrt_sender streams to the engine from the YAML's
+    # remote_addr while the test checks blocks and counters against its oracle.
+    add_executable(test_vrt_loopback test_vrt_loopback.c)
+    target_link_libraries(test_vrt_loopback PRIVATE iio)
+    target_include_directories(test_vrt_loopback
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+    target_compile_definitions(test_vrt_loopback PRIVATE TESTS_DEBUG)
+    add_dependencies(test_vrt_loopback iio-daqiri iiod-emu vrt_sender)
+
+    add_test(NAME daqiri_vrt_loopback
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh
+                     ${XMLS}/fmcomms2.xml $<TARGET_FILE:test_vrt_loopback>)
+    set_tests_properties(
+        daqiri_vrt_loopback
+        PROPERTIES
+            LABELS
+            daqiri-loopback
+            ENVIRONMENT
+            "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml;VRT_SENDER=$<TARGET_FILE:vrt_sender>"
+            RESOURCE_LOCK
+            "iiod-emu-30431;daqiri-udp-25101")
+
     # The api label, once per XML, with TESTS_API_URI pointing at daqiri:.
     add_test(
         NAME daqiri_loopback_api
