@@ -127,8 +127,8 @@ Expected: the three engines; `DAQIRI_ENGINE_DPDK=1`, `DAQIRI_ENGINE_IBVERBS=1`, 
 
 - [ ] **Step 5: Probe with software loopback (no NIC)**
 
-Create `tests/daqiri/resources/raw-sw-loopback-ibverbs.yaml` from DAQIRI's `examples/daqiri_bench_raw_sw_loopback.yaml` reduced to one `huge` RX region (`num_bufs: 4096, buf_size: 9216`), one RX queue id 0 on `cpu_core: 4`, one flow `udp_dst: 4991`, `master_core: 2`, `loopback: "sw"`.
-Run: `$HOME/opt/daqiri/bin/daqiri-probe-raw tests/daqiri/resources/raw-sw-loopback-ibverbs.yaml`
+Create `tests/daqiri/resources/raw-sw-loopback-dpdk.yaml` from DAQIRI's `examples/daqiri_bench_raw_sw_loopback.yaml` reduced to one `huge` RX region (`num_bufs: 4096, buf_size: 9216`), one RX queue id 0 on `cpu_core: 4`, one flow `udp_dst: 4991`, `master_core: 2`, `loopback: "sw"`.
+Run: `$HOME/opt/daqiri/bin/daqiri-probe-raw tests/daqiri/resources/raw-sw-loopback-dpdk.yaml`
 Expected: `engine=ibverbs ... init=ok`, exit 0 (hugepages from Task 1 are required; if Task 1 is not applied yet, expected failure is the DAQIRI "hugepage pool" error and this step is re-run after Task 1).
 
 - [ ] **Step 6: Rebuild libiio against the new prefix and rerun phase-1 suites**
@@ -144,7 +144,7 @@ Edit the Dockerfile as in Files; bump nothing else. Run locally: `docker build -
 
 `CI/daqiri/README.md`: DPDK pin and patches, the DAQIRI patch and why (`dv_flow_en=2` needs ConnectX-6 Dx+), `DAQIRI_MLX5_DV_FLOW_EN`, dev prefixes, probe usage, `DAQIRI_HW_*` env for hardware tests.
 ```bash
-git add CI/daqiri/build-dpdk.sh CI/daqiri/build-daqiri.sh CI/daqiri/patches CI/daqiri/probe-raw.cpp CI/daqiri/Dockerfile CI/daqiri/README.md tests/daqiri/resources/raw-sw-loopback-ibverbs.yaml && git commit -s -m "CI: daqiri: build DPDK 25.11 and the DAQIRI raw engines, carry the dv_flow_en override patch"
+git add CI/daqiri/build-dpdk.sh CI/daqiri/build-daqiri.sh CI/daqiri/patches CI/daqiri/probe-raw.cpp CI/daqiri/Dockerfile CI/daqiri/README.md tests/daqiri/resources/raw-sw-loopback-dpdk.yaml && git commit -s -m "CI: daqiri: build DPDK 25.11 and the DAQIRI raw engines, carry the dv_flow_en override patch"
 ```
 
 ---
