@@ -68,7 +68,7 @@ Unknown keys, and values that do not parse, make context creation fail with
 | `gpu` | CUDA ordinal | `0` | GPU used for `mem=pinned` and `mem=device`. |
 | `iface` | name or address | the first interface of the YAML | Which `interfaces:` entry of the YAML to receive on. |
 | `rxq` | queue id | `0` | Receive queue of that interface. |
-| `lossy` | `0`, `1` | `0` | Lost packets: `0` fails the block (`-EIO`), `1` zero-fills the hole and goes on. Readable and writable at run time as the `daqiri_lossy` buffer attribute. |
+| `lossy` | `0`, `1` | `0` | Lost packets: `0` fails the block (`-EIO`), `1` zero-fills the hole and goes on (up to 1024 lost packets; gaps of unknown size and host overruns are flagged, not filled; see `framing=vrt` below). Readable and writable at run time as the `daqiri_lossy` buffer attribute. |
 | `sid` | 32-bit | `0` | Stream ID to accept, compared under `sid_mask`. Ignored when `sid_mask` is `0`. |
 | `sid_mask` | 32-bit | `0` | With `0`, the Stream ID of the first IF-Data packet is locked and packets of other Streams are counted as foreign. Otherwise a packet needs a Stream ID with `(stream_id & sid_mask) == (sid & sid_mask)`. |
 | `swap` | `0`, `1` | `1` | Convert the big-endian wire samples to the little-endian format the XML describes. `0` leaves them as they are. |
@@ -112,11 +112,34 @@ the same width, 16 or 32 bits; anything else is refused with `-ENOTSUP`.
 Blocks must be filled completely: a dequeued RX block always holds the full
 block size.
 
-Block errors are returned by `iio_block_dequeue()`: `-EIO` for a gap with
-`lossy=0` (the stream resynchronises on the next block), `-EPROTO` for a
-malformed packet or a layout mismatch, `-ECANCELED` after a cancel and
-`-ETIMEDOUT` when nothing arrived in the context timeout (the block stays
-queued). If no block is queued when a packet arrives the packet is dropped and
+Block errors are returned by `iio_block_dequeue()`:
+
+- `-EIO`: data was lost before the data that follows (a gap with `lossy=0`, a
+  gap too large to zero-fill, or a host overrun, see below). The stream
+  resynchronises: the packet after the loss starts the next block.
+- `-EPROTO`: a packet whose packet class or payload size does not fit the
+  sample size of the enabled channels, i.e. the channel mask does not match
+  the stream layout. The stream stops: the current block, the queued ones and
+  every block queued afterwards fail with `-EPROTO` until the buffer is
+  disabled. Malformed datagrams (not a valid VITA 49 packet, for example
+  truncated) are not block errors: `daqiri_rx_malformed` counts them and they
+  are skipped.
+- `-ECANCELED` after a cancel, and `-ETIMEDOUT` when nothing arrived in the
+  context timeout (the block stays queued).
+- Other negative error codes: a packet larger than a block can take
+  (`-ENOBUFS`), or a failure of the engine or of memory.
+
+Losses: with `lossy=0` a gap fails one block with `-EIO`, however many
+packets it spans. With `lossy=1` a gap of known size is zero-filled, one
+packet's worth of zeros per lost packet, so the samples that follow stay at
+their place in the stream (the zeros may span several blocks). The zero-fill
+is capped at 1024 lost packets (`DQ_VRT_MAX_FILL_PACKETS`): a larger sized
+gap is a resynchronisation instead and fails a block with `-EIO` even with
+`lossy=1`. A gap of unknown size (timestamps that disagree with the packet
+count, or a discontinuity such as a sender restart) cannot be filled: with
+`lossy=1` its block is flagged in `daqiri_blocks_with_gaps`, not zero-filled.
+
+If no block is queued when a packet arrives the packet is dropped and
 `daqiri_rx_dropped_no_block` counts it: keep enough blocks queued for your
 packet rate.
 
@@ -157,13 +180,13 @@ packets that arrived before the stream was started are dropped, not counted.
 | `daqiri_rx_overrun_events` | Host overruns: times packets started being dropped for lack of a queued block after a packet had been delivered (one per episode, not per packet). Each one fails (`lossy=0`) or flags (`lossy=1`) the next block. |
 | `daqiri_rx_foreign_packets` | Packets of another Stream ID. |
 | `daqiri_rx_context_packets` | Context packets, dropped. |
-| `daqiri_rx_malformed` | Packets that failed validation. |
+| `daqiri_rx_malformed` | Datagrams that are not valid VITA 49 packets (for example truncated), skipped. |
 | `daqiri_rx_late_packets` | Packets that arrived after a later one (reordered), dropped. |
 | `daqiri_rx_duplicate_packets` | Repeated packets, dropped. |
 | `daqiri_rx_zero_filled_bytes` | Bytes zero-filled for lost packets (`lossy=1`). |
 | `daqiri_blocks_completed` | Blocks filled. |
-| `daqiri_blocks_failed` | Blocks failed with `-EIO` or `-EPROTO`. |
-| `daqiri_blocks_with_gaps` | Blocks that hold a zero-filled hole (`lossy=1`). |
+| `daqiri_blocks_failed` | Blocks completed with an error (`-EIO`, `-EPROTO`, ...); cancelled blocks are not counted. |
+| `daqiri_blocks_with_gaps` | Blocks that report a loss: every block failed with `-EIO` for a gap, a resynchronisation or a host overrun, and, with `lossy=1`, every block flagged for a gap of unknown size or an overrun, or holding zero-fill. |
 | `daqiri_stream_id` | Stream ID in use (hex). |
 | `daqiri_last_error` | Last error, as a negative errno (0 if none). |
 | `daqiri_lossy` | The `lossy` setting. Read/write. |
