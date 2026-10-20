@@ -180,6 +180,7 @@ Project Pages
    bindings
    tools/index
    iiod
+   daqiri-backend
    zephyr
    tls_userguide
    training

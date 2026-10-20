@@ -225,9 +225,11 @@ if (WIN32)
                        ${LIBIIO_WIN32_PREFIX}iio${PROJECT_VERSION_MAJOR})
 
     if (IIO_COMPAT_LIB)
-        set_target_properties(${IIO_COMPAT_LIB} PROPERTIES OUTPUT_NAME libiio
-                                                           PREFIX ""
-                                                           IMPORT_PREFIX "")
+        set_target_properties(
+            ${IIO_COMPAT_LIB}
+            PROPERTIES OUTPUT_NAME libiio
+                       PREFIX ""
+                       IMPORT_PREFIX "")
     endif ()
 endif ()
 
@@ -268,8 +270,23 @@ if (BUILD_SHARED_LIBS)
             target_link_libraries(iio PRIVATE dl)
         endif ()
 
-        file(TO_NATIVE_PATH "${CMAKE_INSTALL_FULL_LIBDIR}/libiio/"
-             IIO_MODULES_DIR)
+        # Lets test builds load modules from the build tree; the directory is
+        # otherwise fixed at configure time.
+        set(IIO_MODULES_DIR_OVERRIDE
+            ""
+            CACHE PATH "Load modules from here instead of the install dir")
+        mark_as_advanced(IIO_MODULES_DIR_OVERRIDE)
+        if (IIO_MODULES_DIR_OVERRIDE)
+            set(IIO_MODULES_DIR "${IIO_MODULES_DIR_OVERRIDE}")
+            # dynamic.c appends the file name directly
+            if (NOT IIO_MODULES_DIR MATCHES "[/\\\\]$")
+                string(APPEND IIO_MODULES_DIR "/")
+            endif ()
+            file(TO_NATIVE_PATH "${IIO_MODULES_DIR}" IIO_MODULES_DIR)
+        else ()
+            file(TO_NATIVE_PATH "${CMAKE_INSTALL_FULL_LIBDIR}/libiio/"
+                 IIO_MODULES_DIR)
+        endif ()
         string(REPLACE "\\" "\\\\" IIO_MODULES_DIR ${IIO_MODULES_DIR})
     endif ()
 endif ()
@@ -838,6 +855,62 @@ else ()
     set(HAVE_DNS_SD OFF)
 endif ()
 
+iio_option(
+    WITH_DAQIRI_BACKEND
+    "Build the DAQIRI backend module (requires DAQIRI, C++17, CUDA toolkit)"
+    OFF "POSIX")
+
+# DAQIRI-free VRT framing helpers (sequence tracker, block assembler). Only
+# libc: shared by the daqiri module and by its unit tests, which need neither
+# DAQIRI nor libiio.
+if (WITH_DAQIRI_BACKEND OR (WITH_TESTS AND NOT WIN32))
+    add_library(iio_daqiri_framing OBJECT daqiri-vrt-stream.c daqiri-asm.c)
+    target_include_directories(iio_daqiri_framing
+                               PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(iio_daqiri_framing PRIVATE iio_common_config)
+    set_target_properties(
+        iio_daqiri_framing
+        PROPERTIES POSITION_INDEPENDENT_CODE ON
+                   C_STANDARD 99
+                   C_STANDARD_REQUIRED ON
+                   C_EXTENSIONS OFF
+                   C_VISIBILITY_PRESET hidden)
+endif ()
+
+if (WITH_DAQIRI_BACKEND)
+    if (NOT ${CMAKE_SYSTEM_NAME} MATCHES "Linux"
+        OR NOT BUILD_SHARED_LIBS
+        OR NOT WITH_MODULES)
+        message(
+            FATAL_ERROR
+                "The DAQIRI backend is a Linux-only module: it needs BUILD_SHARED_LIBS=ON and WITH_MODULES=ON."
+        )
+    endif ()
+
+    enable_language(CXX)
+    find_package(daqiri CONFIG REQUIRED)
+    find_package(CUDAToolkit REQUIRED)
+    find_package(Threads REQUIRED)
+
+    add_library(
+        iio-daqiri SHARED daqiri.c daqiri-mgmt.c daqiri-vrt.c daqiri-engine.cpp
+                          $<TARGET_OBJECTS:iio_daqiri_framing>)
+    target_compile_features(iio-daqiri PRIVATE cxx_std_17)
+    target_link_libraries(iio-daqiri PRIVATE iio daqiri::daqiri CUDA::cudart
+                                             Threads::Threads ${CMAKE_DL_LIBS})
+    # C11 for <stdatomic.h> in daqiri-vrt.c
+    set_target_properties(
+        iio-daqiri
+        PROPERTIES PREFIX lib
+                   C_STANDARD 11
+                   C_STANDARD_REQUIRED ON
+                   C_VISIBILITY_PRESET hidden
+                   CXX_VISIBILITY_PRESET hidden)
+
+    set(IIOD_CLIENT 1)
+    set(NEED_LIBXML2 1)
+endif ()
+
 iio_option(WITH_XML_BACKEND "Enable the XML backend" ON "POSIX")
 if (WITH_XML_BACKEND OR WITH_EMU_BACKEND)
     # Since libxml2-2.9.2, libxml2 provides its own LibXml2-config.cmake, with all
@@ -1096,6 +1169,7 @@ toggle_iio_feature("${WITH_USB_BACKEND_DYNAMIC}" usb-dynamic)
 toggle_iio_feature("${WITH_NETWORK_BACKEND_DYNAMIC}" network-dynamic)
 toggle_iio_feature("${WITH_SERIAL_BACKEND_DYNAMIC}" serial-dynamic)
 toggle_iio_feature("${WITH_EMU_BACKEND_DYNAMIC}" emu-dynamic)
+toggle_iio_feature("${WITH_DAQIRI_BACKEND}" daqiri)
 toggle_iio_feature("${INSTALL_UDEV_RULE}" udev-rule)
 toggle_iio_feature("${INSTALL_IIOD_HOTPLUG_RULE}" iiod-hotplug-rule)
 toggle_iio_feature("${BUILD_SHARED_LIBS}" shared-libs)
