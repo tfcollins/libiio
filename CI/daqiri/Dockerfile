@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxml2-dev libzstd-dev libusb-1.0-0-dev libserialport-dev \
         libavahi-client-dev libaio-dev libcdk5-dev bison flex \
         python3 netcat-openbsd lcov rdma-core libibverbs-dev \
-        libibverbs1 libmlx5-1 librdmacm1 libnuma1 libelf1 \
+        libibverbs1 libmlx5-1 librdmacm1 libnuma1 libnuma-dev libelf1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /opt/dpdk /opt/dpdk

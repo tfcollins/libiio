@@ -55,4 +55,9 @@ meson setup build \
 ninja -C build -j"$(nproc)"
 meson install -C build
 
-PKG_CONFIG_PATH=$prefix/lib/x86_64-linux-gnu/pkgconfig pkg-config --modversion libdpdk
+ver=$(PKG_CONFIG_PATH=$prefix/lib/x86_64-linux-gnu/pkgconfig pkg-config --modversion libdpdk)
+echo "$ver"
+case "$ver" in
+25.11 | 25.11.*) ;;
+*) echo "unexpected DPDK version $ver (want 25.11.x)" >&2; exit 1 ;;
+esac

@@ -1,7 +1,6 @@
 # DAQIRI raw-engine software loopback (no NIC): one host-hugepage RX region,
 # one RX queue, one UDP flow. Needs hugepages. Used by daqiri-probe-raw.
-# NOTE: DAQIRI implements loopback "sw" only in the DPDK engine, so engine is
-# "dpdk" here despite the file name; the ibverbs engine needs a real NIC.
+# DAQIRI implements loopback "sw" only in its DPDK engine (no NIC needed).
 %YAML 1.2
 ---
 daqiri:

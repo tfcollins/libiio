@@ -38,14 +38,16 @@ DAQIRI's own `dpdk_patches/dmabuf.patch` (excluding `.mailmap` and
 checkout at `DAQIRI_REF`. The driver trim list is DAQIRI's, verbatim.
 
     sudo apt install meson ninja-build libnuma-dev libelf-dev python3-pyelftools libibverbs-dev librdmacm-dev
-    CI/daqiri/build-dpdk.sh $HOME/opt/dpdk            # last line: 25.11
+    CI/daqiri/build-dpdk.sh $HOME/opt/dpdk            # last line: 25.11.x
     CI/daqiri/build-daqiri.sh $HOME/opt/daqiri "dpdk ibverbs" $HOME/opt/dpdk
 
 `build-dpdk.sh` re-extracts the tarball on every run (patches apply to a
 pristine tree) and installs without sudo, so the prefix must be writable. The
 pkg-config files land in `<prefix>/lib/x86_64-linux-gnu/pkgconfig`. The empty
 engine list (`build-daqiri.sh <prefix> ""`) still gives the sockets-only build.
-Consumers use `-DCMAKE_PREFIX_PATH="$HOME/opt/daqiri;$HOME/opt/dpdk"`; at run
+Consumers need `libnuma-dev` (the exported `daqiri::daqiri` target links
+`/usr/lib/x86_64-linux-gnu/libnuma.so` by absolute path) and use
+`-DCMAKE_PREFIX_PATH="$HOME/opt/daqiri;$HOME/opt/dpdk"`; at run
 time add `<dpdk-prefix>/lib/x86_64-linux-gnu` to `LD_LIBRARY_PATH`.
 
 `build-daqiri.sh` applies `patches/daqiri/*.patch` to the DAQIRI checkout after
@@ -68,11 +70,11 @@ It parses the YAML, runs `daqiri_init` and prints
 `--seconds N` it then polls `get_rx_burst` on the named interface and queue and
 prints `packets=<n> bytes=<n>` once per second. Without hugepages the DPDK
 engine fails init with its hugepage-pool error.
-`tests/daqiri/resources/raw-sw-loopback-ibverbs.yaml` is a NIC-less
-`loopback: "sw"` config (DAQIRI implements software loopback in its DPDK
-engine, so the file's `engine` is `dpdk`):
+`tests/daqiri/resources/raw-sw-loopback-dpdk.yaml` is a NIC-less
+`loopback: "sw"` config (DAQIRI implements software loopback only in its DPDK
+engine, hence `engine: "dpdk"`):
 
-    daqiri-probe-raw tests/daqiri/resources/raw-sw-loopback-ibverbs.yaml
+    daqiri-probe-raw tests/daqiri/resources/raw-sw-loopback-dpdk.yaml
 
 Hardware tests (ctest label `daqiri-hw`, picard only) take the NIC from
 `DAQIRI_HW_PCI` (PCI address, e.g. `0000:65:00.0`) and `DAQIRI_HW_MAC` (peer
