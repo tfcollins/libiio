@@ -52,7 +52,9 @@
 /* voltage0+voltage1: 4 bytes per sample, one 360-sample packet per block */
 #define SPP 360
 #define BLOCK_SIZE (SPP * 4)
-#define NB_BLOCKS 8
+/* Blocks queued per case (but slow_consumer): a whole 64-packet run, so a
+ * test process that falls behind the sender cannot overrun the stream */
+#define NB_BLOCKS 64
 
 /* The YAML's local_addr; vrt_sender binds its remote_addr by default */
 #define DEST "127.0.0.1:25101"
