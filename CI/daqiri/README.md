@@ -10,7 +10,7 @@ the time of pinning, version 2026.7.0).
 
 ## Build
 
-    CI/daqiri/build-daqiri.sh $HOME/opt/daqiri [<engine-list>]
+    CI/daqiri/build-daqiri.sh $HOME/opt/daqiri [<engine-list> [<dpdk-prefix>]]
 
 Clones DAQIRI at `DAQIRI_REF` into `${TMPDIR:-/tmp}/daqiri-src-<ref>`, builds
 shared libs (no Python, no examples) and installs into the prefix. The engine
@@ -29,6 +29,55 @@ Without it, configure fails with "No CMAKE_CUDA_COMPILER could be found".
 was demonstrably required.) At run time the CUDA libs and `<prefix>/lib` must
 be resolvable, e.g. `LD_LIBRARY_PATH=$HOME/opt/daqiri/lib:/usr/local/cuda-13.4/lib64`
 (the pkg-config file only sets `-rpath-link`).
+
+## Raw engines (DPDK 25.11 + ibverbs)
+
+DPDK pin: 25.11 (`https://fast.dpdk.org/rel/dpdk-25.11.tar.xz`), patched with
+DAQIRI's own `dpdk_patches/dmabuf.patch` (excluding `.mailmap` and
+`release_26_03.rst`) and `dpdk_patches/dpdk.nvidia.patch`, taken from the DAQIRI
+checkout at `DAQIRI_REF`. The driver trim list is DAQIRI's, verbatim.
+
+    sudo apt install meson ninja-build libnuma-dev libelf-dev python3-pyelftools libibverbs-dev librdmacm-dev
+    CI/daqiri/build-dpdk.sh $HOME/opt/dpdk            # last line: 25.11
+    CI/daqiri/build-daqiri.sh $HOME/opt/daqiri "dpdk ibverbs" $HOME/opt/dpdk
+
+`build-dpdk.sh` re-extracts the tarball on every run (patches apply to a
+pristine tree) and installs without sudo, so the prefix must be writable. The
+pkg-config files land in `<prefix>/lib/x86_64-linux-gnu/pkgconfig`. The empty
+engine list (`build-daqiri.sh <prefix> ""`) still gives the sockets-only build.
+Consumers use `-DCMAKE_PREFIX_PATH="$HOME/opt/daqiri;$HOME/opt/dpdk"`; at run
+time add `<dpdk-prefix>/lib/x86_64-linux-gnu` to `LD_LIBRARY_PATH`.
+
+`build-daqiri.sh` applies `patches/daqiri/*.patch` to the DAQIRI checkout after
+`git checkout -- .`, so reruns are idempotent. The one patch,
+`0001-dpdk-engine-honor-DAQIRI_MLX5_DV_FLOW_EN.patch`, lets the environment pick
+the mlx5 flow steering mode. DAQIRI's DPDK engine otherwise passes
+`dv_flow_en=2` (hardware steering), which needs ConnectX-6 Dx or newer and
+fails on a ConnectX-5. Set `DAQIRI_MLX5_DV_FLOW_EN=1` there to use firmware
+steering; `2` forces hardware steering; any other value is logged at WARN and
+ignored. A forced value is logged at INFO.
+
+### Raw probe
+
+`build-daqiri.sh` also builds `<prefix>/bin/daqiri-probe-raw`:
+
+    daqiri-probe-raw <yaml> [--seconds N] [--port <interface-name>] [--queue <id>]
+
+It parses the YAML, runs `daqiri_init` and prints
+`engine=<kind> ports=<n> init=ok` (exit 0) or `init=<status>` (exit 1). With
+`--seconds N` it then polls `get_rx_burst` on the named interface and queue and
+prints `packets=<n> bytes=<n>` once per second. Without hugepages the DPDK
+engine fails init with its hugepage-pool error.
+`tests/daqiri/resources/raw-sw-loopback-ibverbs.yaml` is a NIC-less
+`loopback: "sw"` config (DAQIRI implements software loopback in its DPDK
+engine, so the file's `engine` is `dpdk`):
+
+    daqiri-probe-raw tests/daqiri/resources/raw-sw-loopback-ibverbs.yaml
+
+Hardware tests (ctest label `daqiri-hw`, picard only) take the NIC from
+`DAQIRI_HW_PCI` (PCI address, e.g. `0000:65:00.0`) and `DAQIRI_HW_MAC` (peer
+MAC); GitHub-hosted jobs never run them. The tests themselves land after this
+build change.
 
 ## Probe
 
