@@ -136,7 +136,8 @@ static void usage(FILE *f)
 			"lists hold packet indices; [a, b] means b = a + 1 was sent before a.\n"
 			"\n"
 			"Exit status: 0 done, 1 runtime error, 2 usage error.\n",
-			TSI_SECS, DEFAULT_FROM, MAX_SAMPLES, DEFAULT_SAMPLES, DEFAULT_SID, BATCH, BATCH);
+			TSI_SECS, DEFAULT_FROM, MAX_SAMPLES, DEFAULT_SAMPLES, DEFAULT_SID, BATCH,
+			BATCH);
 }
 
 static void __attribute__((format(printf, 1, 2), noreturn)) usage_error(const char *fmt, ...);
@@ -644,8 +645,7 @@ static int send_batch(int fd, struct mmsghdr *msgs, unsigned int nb)
  * due, up to BATCH, a pause after every BATCH datagrams with --burst-gap-ms.
  * *sent counts the datagrams sent.
  */
-static int run(int fd, const struct opts *o, const struct source *s, struct gen *g,
-		uint64_t *sent)
+static int run(int fd, const struct opts *o, const struct source *s, struct gen *g, uint64_t *sent)
 {
 	size_t len = packet_len(o);
 	struct mmsghdr msgs[BATCH];

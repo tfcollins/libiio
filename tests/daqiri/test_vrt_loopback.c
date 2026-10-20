@@ -214,8 +214,8 @@ static const char *json_long(const char *p, long *val)
 }
 
 /* [n, ...] (width 1) or [[a, b], ...] (width 2) of integers into out */
-static int json_array(const char *p, long *out, unsigned int width, unsigned int max,
-		unsigned int *nb)
+static int json_array(
+		const char *p, long *out, unsigned int width, unsigned int max, unsigned int *nb)
 {
 	unsigned int w;
 
@@ -311,8 +311,8 @@ static bool reordered_first(const struct oracle *o, long p)
 	return false;
 }
 
-static unsigned int push_emitted(const struct oracle *o, long p, long *order, unsigned int n,
-		unsigned int max)
+static unsigned int push_emitted(
+		const struct oracle *o, long p, long *order, unsigned int n, unsigned int max)
 {
 	if (n < max)
 		order[n++] = p;
@@ -347,8 +347,8 @@ static unsigned int oracle_order(const struct oracle *o, long *order, unsigned i
 }
 
 /* The blocks one-packet blocks receive from packets in <order> */
-static unsigned int expect_blocks(const long *order, unsigned int nb, bool lossy, long *exp,
-		unsigned int max)
+static unsigned int expect_blocks(
+		const long *order, unsigned int nb, bool lossy, long *exp, unsigned int max)
 {
 	long p, g, last = -1;
 	unsigned int i, k = 0;
@@ -655,8 +655,8 @@ static void check_no_more_blocks(const struct lb_case *c)
 	CHECK_EQ(iio_block_dequeue(c->blocks[c->next], true), -EBUSY, "no further block completed");
 }
 
-static void check_oracle_list(const long *got, unsigned int nb, const long *exp, unsigned int nb_exp,
-		const char *message)
+static void check_oracle_list(const long *got, unsigned int nb, const long *exp,
+		unsigned int nb_exp, const char *message)
 {
 	bool same = nb == nb_exp;
 	unsigned int i;
