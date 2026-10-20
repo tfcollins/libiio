@@ -156,7 +156,9 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
             ENVIRONMENT
             "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml;VRT_SENDER=$<TARGET_FILE:vrt_sender>"
             RESOURCE_LOCK
-            "iiod-emu-30431;daqiri-udp-25101")
+            "iiod-emu-30431;daqiri-udp-25101"
+            TIMEOUT
+            60)
 
     # The api label, once per XML, with TESTS_API_URI pointing at daqiri:.
     add_test(
@@ -172,7 +174,9 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                    RESOURCE_LOCK
                    iiod-emu-30431
                    RUN_SERIAL
-                   TRUE)
+                   TRUE
+                   TIMEOUT
+                   120)
 endif ()
 
 # VITA 49.2 prologue parser unit test: header-only, needs neither libiio's
