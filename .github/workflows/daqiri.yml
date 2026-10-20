@@ -1,6 +1,7 @@
 name: DAQIRI backend
 permissions:
   contents: read
+  packages: read
 
 on: [push, pull_request]
 
