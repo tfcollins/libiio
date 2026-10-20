@@ -859,6 +859,52 @@ out:
 	case_close(c);
 }
 
+/* --dup-every 8: 7, 15, ..., 63 are sent twice in a row; each copy is
+ * dropped as a duplicate, so the blocks are the clean run and nothing is
+ * counted lost */
+TEST_FUNCTION(duplicate)
+{
+	static const char *const args[] = { "--packets", "64", "--pps", "1000", "--dup-every", "8",
+		NULL };
+	static const long dup_seqs[] = { 7, 15, 23, 31, 39, 47, 55, 63 };
+	struct lb_case *c = &lc;
+	unsigned int i, ok = 0;
+	int ret;
+
+	ret = case_start(c, "", NB_BLOCKS, args);
+	CHECK_EQ(ret, 0, "stream started, sender forked");
+	if (ret)
+		goto out;
+
+	case_stream(c, 63);
+	if (!case_finish(c))
+		goto out;
+
+	CHECK_EQ(c->o.sent, 72, "oracle: 64 packets and 8 copies sent");
+	CHECK_EQ(c->o.nb_dropped + c->o.nb_reordered, 0, "oracle: nothing dropped or reordered");
+	check_oracle_list(c->o.duplicated, c->o.nb_duplicated, dup_seqs, 8,
+			"oracle: duplicated 7, 15, ..., 63");
+
+	CHECK_EQ(c->nb_recs, 64, "64 blocks");
+	for (i = 0; i < c->nb_recs; i++)
+		ok += c->recs[i] == (long)i;
+	CHECK_EQ(ok, 64, "block k is ramp packet k: no copy delivered");
+	check_blocks(c, false);
+	check_no_more_blocks(c);
+
+	CHECK_EQ(ctr(c, "daqiri_rx_duplicate_packets"), c->o.nb_duplicated,
+			"duplicate_packets == copies");
+	CHECK_EQ(ctr(c, "daqiri_rx_lost_packets"), 0, "lost_packets");
+	CHECK_EQ(ctr(c, "daqiri_rx_gap_events"), 0, "gap_events");
+	CHECK_EQ(ctr(c, "daqiri_rx_late_packets"), 0, "late_packets");
+	CHECK_EQ(ctr(c, "daqiri_rx_packets"), 64, "rx_packets: copies not delivered");
+	CHECK_EQ(ctr(c, "daqiri_blocks_completed"), 64, "blocks_completed");
+	CHECK_EQ(ctr(c, "daqiri_blocks_failed"), 0, "blocks_failed");
+	CHECK_EQ(ctr(c, "daqiri_rx_dropped_no_block"), 0, "dropped_no_block");
+out:
+	case_close(c);
+}
+
 /*
  * Two blocks queued, not dequeued while the first burst of 32 packets goes
  * by at 10 kpps. The poller keeps draining: packets 0 and 1 fill the
@@ -1000,6 +1046,7 @@ int main(void)
 	RUN_TEST(drop_list);
 	RUN_TEST(drop_list_lossy);
 	RUN_TEST(reorder);
+	RUN_TEST(duplicate);
 	RUN_TEST(slow_consumer);
 	RUN_TEST(burst_gap);
 

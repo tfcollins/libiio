@@ -41,7 +41,7 @@ a time:
 | `daqiri_context` | management plane against `ip:` |
 | `daqiri_block_equivalence` | `daqiri:...,framing=iiod` carries the same bytes and context as `ip:` |
 | `daqiri_lifecycle`, `daqiri_lifecycle_mixed` | block states, destroy with a buffer open, one YAML per process, `daqiri_*` attributes |
-| `daqiri_vrt_loopback` | `vrt_sender` to the engine: block contents and counters against the sender's `--json` oracle, with drops, reordering and duplicates |
+| `daqiri_vrt_loopback` | `vrt_sender` to the engine: block contents and counters against the sender's `--json` oracle, clean and with drops (`lossy=0` and `1`), reordering, duplicates, a host overrun (slow consumer) and a burst gap |
 | `daqiri_loopback_api` | the `api` tests over `daqiri:...,framing=iiod` for every emu XML (`run_loopback.sh`); `DAQIRI_LOOPBACK_URI=ip:127.0.0.1` runs the control through `ip:` |
 
 `with_emu.sh <xml> <cmd...>` runs a command against an emulator serving
