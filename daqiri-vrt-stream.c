@@ -89,8 +89,9 @@ int dq_vrt_rx_packet(
 
 	spp = rx->samples_per_pkt;
 	std = spp && p.payload_bytes / ss == spp;
-	/* have_ts implies spp > 0 and that the last packet had spp samples. */
-	cmp = rx->have_ts && p.tsf == rx->tsf;
+	/* have_ts implies spp > 0 and that the last packet had spp samples.
+	 * With gap_ts off the timestamps are not used at all. */
+	cmp = rx->cfg.gap_ts && rx->have_ts && p.tsf == rx->tsf;
 
 	if (rx->expected_count >= 0)
 		gap4 = (p.pkt_count - (unsigned int)rx->expected_count) & 0xF;
@@ -113,11 +114,11 @@ int dq_vrt_rx_packet(
 		delta = p.tsf_frac - rx->last_frac;
 		n = delta / spp;
 		if (gap4 || delta != spp) {
-			if (rx->cfg.gap_ts && std && n >= 2) {
+			if (std && n >= 2) {
 				gap = n - 1;
 			} else {
 				gap = gap4;
-				unknown = rx->cfg.gap_ts || !gap4;
+				unknown = true;
 			}
 		}
 	} else if (gap4) {

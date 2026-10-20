@@ -72,7 +72,7 @@ Unknown keys, and values that do not parse, make context creation fail with
 | `sid` | 32-bit | `0` | Stream ID to accept, compared under `sid_mask`. Ignored when `sid_mask` is `0`. |
 | `sid_mask` | 32-bit | `0` | With `0`, the Stream ID of the first IF-Data packet is locked and packets of other Streams are counted as foreign. Otherwise a packet needs a Stream ID with `(stream_id & sid_mask) == (sid & sid_mask)`. |
 | `swap` | `0`, `1` | `1` | Convert the big-endian wire samples to the little-endian format the XML describes. `0` leaves them as they are. |
-| `gap_ts` | `0`, `1` | `1` | Use the VITA 49 fractional timestamp (sample count) to size a gap. |
+| `gap_ts` | `0`, `1` | `1` | Use the VITA 49 fractional timestamp (a sample count that advances by the samples of each packet). `1`: the timestamp classifies packets (one that steps back a little is late, one that repeats the last timestamp and count is a duplicate; both are dropped and counted, not taken as losses) and sizes gaps, also past the 16-packet wrap of the 4-bit packet count. `0`: timestamps are not used at all, for a framer whose timestamp does not advance by exactly the samples per packet. Only the 4-bit packet count is used: a loss of 16 packets (or a multiple) is not seen, a repeated packet counts as a loss of 15 and a reordered one as a loss, nothing is counted late or duplicate, and with `lossy=1` those false losses are zero-filled. |
 | `data_port` | port | the management port | TCP port of the data connection for `framing=iiod`. |
 | `poll` | microseconds | `200` | Idle wait of the receive thread when the queue is empty, see below. |
 
@@ -102,7 +102,8 @@ drops Context packets (counted), filters on the Stream ID, converts the payload
 from big-endian to the format of the channels, and copies it into the blocks
 you queued. Losses are found from the 4-bit packet count of the prologue; with
 `gap_ts=1` the fractional timestamp (a sample count) tells how many packets
-were lost even when the count wrapped.
+were lost even when the count wrapped, and tells late and duplicate packets
+from losses.
 
 One Stream ID carries one channel group, so one buffer maps to one
 `(interface, queue)` and the enabled channel mask **must match the stream
@@ -215,9 +216,9 @@ raise `-n`.
   packets, so a gap of a multiple of 16 packets cannot be seen from the count
   alone. With `gap_ts=1` and a sender that puts a sample-count timestamp in
   every packet, the timestamp sizes the gap and removes that ambiguity.
-  Without comparable timestamps a loss of 16 packets or a multiple of it is
-  not detected, and a reordered packet looks like a loss. Late packets are
-  dropped (and counted), not put back in order.
+  Without comparable timestamps (or with `gap_ts=0`) a loss of 16 packets or
+  a multiple of it is not detected, and a reordered packet looks like a loss.
+  Late packets are dropped (and counted), not put back in order.
 - Linux only.
 
 ## Security

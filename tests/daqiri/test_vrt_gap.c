@@ -225,20 +225,22 @@ TEST_FUNCTION(drop_many_ts)
 	TEST_ASSERT_EQ(rx.c.gap_unknown, 0, "drop 16 gap_ts: gap_unknown");
 }
 
-TEST_FUNCTION(drop_16_ambiguous)
+TEST_FUNCTION(drop_16_no_gap_ts)
 {
 	static const unsigned seq[] = { 0, 1, 18 };
 	struct dq_vrt_rx rx;
 	struct dq_vrt_data d;
 	int ret;
 
+	/* gap_ts off ignores the timestamps that would see it: to the 4-bit
+	 * count a loss of 16 is no loss (drop_many_ts sizes it with gap_ts). */
 	init_rx(&rx, false, 4);
 	ret = run(&rx, seq, N(seq), &d);
 	TEST_ASSERT_EQ(ret, 3, "drop 16: DATA");
 	TEST_ASSERT_EQ(rx.c.lost_packets, 0, "drop 16: lost");
-	TEST_ASSERT_EQ(rx.c.gap_events, 1, "drop 16: gap_events");
-	TEST_ASSERT_EQ(rx.c.gap_unknown, 1, "drop 16: gap_unknown");
-	TEST_ASSERT(d.gap_unknown, "drop 16: out.gap_unknown");
+	TEST_ASSERT_EQ(rx.c.gap_events, 0, "drop 16: gap_events");
+	TEST_ASSERT_EQ(rx.c.gap_unknown, 0, "drop 16: gap_unknown");
+	TEST_ASSERT(!d.gap_unknown, "drop 16: out.gap_unknown");
 	TEST_ASSERT_EQ(d.gap, 0, "drop 16: out.gap");
 }
 
@@ -373,6 +375,75 @@ TEST_FUNCTION(no_timestamps)
 	TEST_ASSERT_EQ(d.gap, 15, "no ts repeat: gap 15");
 	TEST_ASSERT_EQ(rx.c.lost_packets, 15, "no ts repeat: lost");
 	TEST_ASSERT_EQ(rx.c.duplicates, 0, "no ts repeat: duplicates");
+}
+
+/* Timestamps present, gap_ts off: they are not used at all, the 4-bit
+ * count alone decides (late, duplicate and stalled are not classified). */
+TEST_FUNCTION(gap_ts_off)
+{
+	static const unsigned seq[] = { 0, 1, 2, 3, 4, 5, 7 };
+	struct dq_vrt_rx rx;
+	struct dq_vrt_data d;
+	uint8_t buf[BUF_SIZE];
+	unsigned i;
+	size_t len;
+	int ret;
+
+	/* 7 before 6: a loss of 1, then 6 is not late but a loss of 14 */
+	init_rx(&rx, false, 4);
+	run(&rx, seq, N(seq), &d);
+	TEST_ASSERT_EQ(d.gap, 1, "late: 7 before 6 is a gap of 1");
+	TEST_ASSERT(!d.gap_unknown, "late: 4-bit gap not flagged");
+	ret = feed(&rx, 6, &d);
+	TEST_ASSERT_EQ(ret, DQ_VRT_DATA, "late: 6 is DATA, not SKIP");
+	TEST_ASSERT_EQ(d.gap, 14, "late: 6 after 7 is a 4-bit gap of 14");
+	TEST_ASSERT(!d.gap_unknown, "late: not flagged");
+	TEST_ASSERT_EQ(rx.c.late, 0, "late: not classified late");
+	TEST_ASSERT_EQ(rx.c.lost_packets, 15, "late: lost 1 + 14");
+	TEST_ASSERT_EQ(rx.c.gap_events, 2, "late: gap_events");
+	TEST_ASSERT_EQ(rx.c.packets, 8, "late: packets");
+
+	/* A repeated count and timestamp is a loss of 15, not a duplicate */
+	init_rx(&rx, false, 4);
+	feed(&rx, 0, &d);
+	feed(&rx, 1, &d);
+	ret = feed(&rx, 1, &d);
+	TEST_ASSERT_EQ(ret, DQ_VRT_DATA, "dup: DATA");
+	TEST_ASSERT_EQ(d.gap, 15, "dup: gap 15");
+	TEST_ASSERT(!d.gap_unknown, "dup: not flagged");
+	TEST_ASSERT_EQ(rx.c.duplicates, 0, "dup: not classified duplicate");
+	TEST_ASSERT_EQ(rx.c.lost_packets, 15, "dup: lost 15");
+
+	/* A TSF that does not advance by samples_per_pkt: stalled, then
+	 * jumping, then with a 4-bit gap that it contradicts */
+	init_rx(&rx, false, 4);
+	feed(&rx, 0, &d);
+	feed(&rx, 1, &d);
+	len = mk_pkt(buf, 2, 1 * SPP, SPP);
+	ret = dq_vrt_rx_packet(&rx, buf, len, &d);
+	TEST_ASSERT_EQ(ret, DQ_VRT_DATA, "stalled ts: DATA");
+	TEST_ASSERT(d.gap == 0 && !d.gap_unknown, "stalled ts: no gap");
+	len = mk_pkt(buf, 3, 100 * SPP, SPP);
+	ret = dq_vrt_rx_packet(&rx, buf, len, &d);
+	TEST_ASSERT_EQ(ret, DQ_VRT_DATA, "jumping ts: DATA");
+	TEST_ASSERT(d.gap == 0 && !d.gap_unknown, "jumping ts: no gap");
+	len = mk_pkt(buf, 6, 101 * SPP, SPP);
+	ret = dq_vrt_rx_packet(&rx, buf, len, &d);
+	TEST_ASSERT_EQ(d.gap, 2, "count gap: 4-bit size, not the timestamp's 0");
+	TEST_ASSERT(!d.gap_unknown, "count gap: not flagged");
+	TEST_ASSERT_EQ(rx.c.gap_events, 1, "ts ignored: one gap event");
+	TEST_ASSERT_EQ(rx.c.gap_unknown, 0, "ts ignored: gap_unknown");
+
+	/* A sender restart is a 4-bit gap, not a flagged discontinuity */
+	init_rx(&rx, false, 4);
+	for (i = 0; i < 20; i++)
+		feed(&rx, i, &d);
+	len = mk_pkt(buf, 0, 0, SPP);
+	ret = dq_vrt_rx_packet(&rx, buf, len, &d);
+	TEST_ASSERT_EQ(ret, DQ_VRT_DATA, "restart: DATA");
+	TEST_ASSERT_EQ(d.gap, 12, "restart: 4-bit gap");
+	TEST_ASSERT(!d.gap_unknown, "restart: not flagged");
+	TEST_ASSERT_EQ(rx.c.late, 0, "restart: not late");
 }
 
 TEST_FUNCTION(odd_size)
@@ -578,12 +649,13 @@ int main(void)
 	RUN_TEST(drop_three);
 	RUN_TEST(wrap);
 	RUN_TEST(drop_many_ts);
-	RUN_TEST(drop_16_ambiguous);
+	RUN_TEST(drop_16_no_gap_ts);
 	RUN_TEST(huge_jump);
 	RUN_TEST(duplicate);
 	RUN_TEST(reorder);
 	RUN_TEST(backward_step);
 	RUN_TEST(no_timestamps);
+	RUN_TEST(gap_ts_off);
 	RUN_TEST(odd_size);
 	RUN_TEST(sid_filter);
 	RUN_TEST(context);
