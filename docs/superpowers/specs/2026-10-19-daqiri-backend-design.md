@@ -130,7 +130,7 @@ attrs: `uri`, `ip,ip-addr`, `daqiri,yaml`, `daqiri,framing`, `daqiri,mem`, `daqi
 **URI:** `daqiri:<host>[:port][,key=value]*` (host parse copied from network.c:663-694; option split
 like serial.c). Keys: `yaml` (default `$IIO_DAQIRI_YAML`, else -EINVAL), `framing=vrt|iiod` (vrt),
 `mem=host|pinned|device` (host), `gpu=<ordinal>`, `lossy=0|1`, `iface`, `rxq`, `sid`/`sid_mask`,
-`swap=0|1`, `gap_ts=0|1`, `data_port` (iiod framing; default mgmt port), `poll=<µs>` (50).
+`swap=0|1`, `gap_ts=0|1`, `data_port` (iiod framing; default mgmt port), `poll=<µs>` (200; with `ppoll` the idle wait at 50 µs cost ~13% of a core, and 200 µs keeps the worst-case idle latency well below the engine's 64-packet queue at 1G rates).
 
 **GPU path (designed now, built in M4/M5):** `mem=pinned` = cudaHostAlloc blocks, CPU copy path.
 `mem=device` = cudaMalloc blocks; requires a raw engine with HDS (seg 0 host for prologues, seg 1
