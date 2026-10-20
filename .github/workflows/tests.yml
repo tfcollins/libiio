@@ -27,7 +27,7 @@ jobs:
             make
             make coverage
         - name: DAQIRI framing unit tests
-          run: ctest --test-dir build -L daqiri --output-on-failure
+          run: ctest --test-dir build -L '^daqiri$' --output-on-failure
 
         # - name: Upload coverage to Codecov
         #     uses: codecov/codecov-action@v1

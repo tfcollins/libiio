@@ -4,9 +4,14 @@ permissions:
 
 on: [push, pull_request]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   software:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     container:
       image: ghcr.io/tfcollins/libiio-daqiri-ci:latest
     steps:
@@ -34,6 +39,7 @@ jobs:
 
   unit-no-daqiri:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - name: Install dependencies
@@ -43,4 +49,4 @@ jobs:
           cmake -S . -B build -DWITH_TESTS=ON
           cmake --build build -j"$(nproc)"
       - name: Unit tests
-        run: ctest --test-dir build -L daqiri --output-on-failure
+        run: ctest --test-dir build -L '^daqiri$' --output-on-failure
