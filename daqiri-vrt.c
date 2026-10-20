@@ -11,7 +11,8 @@
  *
  * Block states:
  *   FREE -enqueue-> QUEUED -poller-> FILLING -full-> DONE -dequeue-> FREE
- *   a gap with lossy=0, or a stream failure: QUEUED/FILLING -> ERROR(err)
+ *   a gap or an overrun with lossy=0, or a stream failure:
+ *   QUEUED/FILLING -> ERROR(err)
  *   cancel: QUEUED/FILLING -> CANCELLED
  * Dequeue returns 0 for DONE, err for ERROR and -ECANCELED for CANCELLED,
  * all three back to FREE; -EPERM for a FREE block. A pending block gives
@@ -20,6 +21,13 @@
  * A packet that arrives with no block queued is dropped (dropped_no_block,
  * the host overrun path), and the assembler forgets the carry and pending
  * zeros it had for the stream: the next block starts at the next packet.
+ * The first drop after a delivered packet is an overrun (overrun_events),
+ * and the next packet that finds a block treats it as a gap of unknown
+ * size: with lossy=0 that block fails with -EIO and the packet starts the
+ * following one, with lossy=1 the block is flagged (blocks_with_gaps), not
+ * zero-filled. Drops after a block failed for an overrun, with no packet
+ * delivered since, belong to the same overrun and fail nothing more, so a
+ * consumer that queues one block at a time still gets data.
  * -EPROTO from the tracker (layout mismatch) fails the stream: the current
  * and queued blocks, and every block enqueued afterwards, fail with -EPROTO
  * until the buffer is disabled.
@@ -101,11 +109,13 @@ struct dq_vrt_buffer {
 	struct dq_vrt_block *head, *tail; /* QUEUED, in order */
 	struct dq_vrt_block *cur;	  /* FILLING */
 	bool cur_gap;			  /* cur follows an unsized loss */
+	bool delivered;			  /* the last packet went into a block */
+	bool overrun_pending;		  /* dropped packets the next block must report */
 
 	struct dq_vrt_rx rx;
 	struct dq_asm as;
 
-	uint64_t dropped_no_block;
+	uint64_t dropped_no_block, overrun_events;
 	uint64_t blocks_completed, blocks_failed, blocks_with_gaps;
 	int last_error;
 
@@ -120,6 +130,7 @@ enum dq_vrt_attr {
 	DQ_ATTR_RX_LOST_PACKETS,
 	DQ_ATTR_RX_GAP_EVENTS,
 	DQ_ATTR_RX_DROPPED_NO_BLOCK,
+	DQ_ATTR_RX_OVERRUN_EVENTS,
 	DQ_ATTR_RX_FOREIGN_PACKETS,
 	DQ_ATTR_RX_CONTEXT_PACKETS,
 	DQ_ATTR_RX_MALFORMED,
@@ -143,6 +154,7 @@ const char *const dq_vrt_attr_names[] = {
 	[DQ_ATTR_RX_LOST_PACKETS] = "daqiri_rx_lost_packets",
 	[DQ_ATTR_RX_GAP_EVENTS] = "daqiri_rx_gap_events",
 	[DQ_ATTR_RX_DROPPED_NO_BLOCK] = "daqiri_rx_dropped_no_block",
+	[DQ_ATTR_RX_OVERRUN_EVENTS] = "daqiri_rx_overrun_events",
 	[DQ_ATTR_RX_FOREIGN_PACKETS] = "daqiri_rx_foreign_packets",
 	[DQ_ATTR_RX_CONTEXT_PACKETS] = "daqiri_rx_context_packets",
 	[DQ_ATTR_RX_MALFORMED] = "daqiri_rx_malformed",
@@ -253,6 +265,21 @@ static void dq_vrt_fail_stream(struct dq_vrt_buffer *v, int err)
 	pthread_cond_broadcast(&v->cond);
 }
 
+/* No block for a packet: drop it. The first drop after a delivered packet
+ * starts an overrun, which the next block reports. */
+static void dq_vrt_drop(struct dq_vrt_buffer *v)
+{
+	v->dropped_no_block++;
+	if (v->delivered) {
+		v->overrun_events++;
+		v->overrun_pending = true;
+		v->delivered = false;
+	}
+
+	/* The next block starts with the next packet */
+	dq_asm_reset(&v->as);
+}
+
 /* Assemble one payload that follows <gap> lost packets */
 static void dq_vrt_deliver(struct dq_vrt_buffer *v, const uint8_t *payload, size_t len,
 		uint32_t gap, bool flag)
@@ -262,10 +289,19 @@ static void dq_vrt_deliver(struct dq_vrt_buffer *v, const uint8_t *payload, size
 
 	for (;;) {
 		if (!v->cur && !dq_vrt_next(v)) {
-			v->dropped_no_block++;
-			/* The next block starts with the next packet */
-			dq_asm_reset(&v->as);
+			dq_vrt_drop(v);
 			return;
+		}
+
+		if (v->overrun_pending) {
+			/* Packets were dropped since the last delivered one: a
+			 * gap of unknown size. Fail the block like a sized gap,
+			 * or with lossy=1 flag it: there is nothing to fill. */
+			v->overrun_pending = false;
+			if (v->as.lossy)
+				flag = true;
+			else if (!gap)
+				gap = 1;
 		}
 
 		if (flag)
@@ -273,6 +309,7 @@ static void dq_vrt_deliver(struct dq_vrt_buffer *v, const uint8_t *payload, size
 
 		ret = dq_asm_push(&v->as, payload, len, gap, &done);
 		if (ret >= 0) {
+			v->delivered = true;
 			if (done)
 				dq_vrt_complete(v, 0);
 			return;
@@ -336,6 +373,8 @@ static void dq_vrt_packet(struct dq_vrt_buffer *v, const uint8_t *data, size_t l
 		if (v->cur) {
 			v->cur_gap = true;
 			dq_vrt_complete(v, -EIO);
+			/* That block reports a pending overrun as well */
+			v->overrun_pending = false;
 		}
 		dq_asm_reset(&v->as);
 		gap = 0;
@@ -538,6 +577,8 @@ int dq_vrt_enable(struct dq_vrt_buffer *v, bool enable)
 	dq_vrt_rx_init(&v->rx, &v->cfg);
 	v->rx.c = c;
 	dq_asm_reset(&v->as);
+	v->delivered = false;
+	v->overrun_pending = false;
 	pthread_mutex_unlock(&v->lock);
 
 	/* Whatever queued up while disabled is stale */
@@ -573,6 +614,8 @@ void dq_vrt_cancel(struct dq_vrt_buffer *v)
 	}
 	v->tail = NULL;
 	dq_asm_reset(&v->as);
+	v->delivered = false;
+	v->overrun_pending = false;
 
 	pthread_cond_broadcast(&v->cond);
 	pthread_mutex_unlock(&v->lock);
@@ -757,7 +800,7 @@ static int dq_vrt_attr_index(const char *name)
 ssize_t dq_vrt_read_attr(struct dq_vrt_buffer *v, const char *name, char *dst, size_t len)
 {
 	struct dq_vrt_counters c;
-	uint64_t u = 0, zero_filled, dropped, completed, failed, with_gaps;
+	uint64_t u = 0, zero_filled, dropped, overruns, completed, failed, with_gaps;
 	int idx = dq_vrt_attr_index(name), last_error, lossy, n;
 	uint32_t sid;
 
@@ -768,6 +811,7 @@ ssize_t dq_vrt_read_attr(struct dq_vrt_buffer *v, const char *name, char *dst, s
 	c = v->rx.c;
 	zero_filled = v->as.zero_filled;
 	dropped = v->dropped_no_block;
+	overruns = v->overrun_events;
 	completed = v->blocks_completed;
 	failed = v->blocks_failed;
 	with_gaps = v->blocks_with_gaps;
@@ -791,6 +835,9 @@ ssize_t dq_vrt_read_attr(struct dq_vrt_buffer *v, const char *name, char *dst, s
 		break;
 	case DQ_ATTR_RX_DROPPED_NO_BLOCK:
 		u = dropped;
+		break;
+	case DQ_ATTR_RX_OVERRUN_EVENTS:
+		u = overruns;
 		break;
 	case DQ_ATTR_RX_FOREIGN_PACKETS:
 		u = c.foreign;

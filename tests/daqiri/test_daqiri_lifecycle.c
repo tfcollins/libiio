@@ -451,6 +451,7 @@ TEST_FUNCTION(counter_attrs)
 		"daqiri_rx_lost_packets",
 		"daqiri_rx_gap_events",
 		"daqiri_rx_dropped_no_block",
+		"daqiri_rx_overrun_events",
 		"daqiri_rx_foreign_packets",
 		"daqiri_rx_context_packets",
 		"daqiri_rx_malformed",
