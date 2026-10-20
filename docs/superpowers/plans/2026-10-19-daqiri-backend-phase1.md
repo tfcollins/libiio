@@ -87,7 +87,7 @@ git add CI/daqiri && git commit -s -m "ci: pin DAQIRI and add dev build script"
   struct dq_opts { char yaml[4096]; char iface[64]; int rxq; enum dq_framing framing;
                    enum dq_mem mem; int gpu; bool lossy; bool swap; bool gap_ts;
                    uint32_t sid, sid_mask; uint16_t data_port; unsigned poll_us; };
-  int dq_opts_parse(struct dq_opts *o, const char *list, const struct iio_context_params *p); /* list = text after first ',' or NULL; applies defaults: framing=vrt, mem=host, gpu=0, lossy=0, swap=1, gap_ts=1, poll=50, yaml=$IIO_DAQIRI_YAML */
+  int dq_opts_parse(struct dq_opts *o, const char *list, const struct iio_context_params *p); /* list = text after first ',' or NULL; applies defaults: framing=vrt, mem=host, gpu=0, lossy=0, swap=1, gap_ts=1, poll=200, yaml=$IIO_DAQIRI_YAML */
   struct dq_mgmt { int fd; int cancel_fd; const struct iio_context_params *params; };  /* this IS struct iiod_client_pdata for this module */
   int  dq_mgmt_connect(struct dq_mgmt *m, const char *host, const char *port, int timeout_ms); /* getaddrinfo + non-blocking connect; TCP_NODELAY; eventfd */
   void dq_mgmt_close(struct dq_mgmt *m);

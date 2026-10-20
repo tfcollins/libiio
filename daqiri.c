@@ -185,7 +185,10 @@ int dq_opts_parse(struct dq_opts *o, const char *list, const struct iio_context_
 	o->mem = DQ_MEM_HOST;
 	o->swap = true;
 	o->gap_ts = true;
-	o->poll_us = 50;
+	/* 200 us: with ppoll() the idle wait at 50 us costs ~13% of a core, and
+	 * 200 us keeps the worst-case idle latency well below the engine's
+	 * 64-packet queue at 1G rates */
+	o->poll_us = 200;
 
 	if (env && dq_copy_str(o->yaml, sizeof(o->yaml), env)) {
 		prm_err(p, "daqiri: IIO_DAQIRI_YAML is longer than %zu bytes\n",
