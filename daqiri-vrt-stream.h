@@ -24,12 +24,16 @@
  *    packet reports the rejected ones as a gap;
  *  - sequence, below. Then packets++, bytes += payload, DATA.
  *
- * Timestamps are "comparable" when the previous accepted packet carried a
- * sample-count or free-running TSF and exactly samples_per_pkt samples
- * (rx->have_ts), and this packet carries the same TSF kind. Comparable
- * timestamps are always used to classify packets; cfg.gap_ts only selects
- * whether they also size gaps. samples_per_pkt is payload_bytes /
- * sample_size of the first data packet.
+ * Timestamps are "comparable" when cfg.gap_ts is set, the previous accepted
+ * packet carried a sample-count or free-running TSF and exactly
+ * samples_per_pkt samples (rx->have_ts), and this packet carries the same
+ * TSF kind. Comparable timestamps both classify packets (late, duplicate,
+ * discontinuity, stalled) and size gaps. With cfg.gap_ts off timestamps
+ * are not used at all, for framers whose TSF does not advance by exactly
+ * samples_per_pkt per packet: only the 4-bit count rule below applies, so a
+ * repeated count is a loss of 15, a reordered packet is a loss and nothing
+ * is late or a duplicate. samples_per_pkt is payload_bytes / sample_size of
+ * the first data packet.
  *
  * With comparable timestamps, d = last_frac - tsf_frac when the timestamp
  * went backwards:
@@ -45,23 +49,24 @@
  *
  * Otherwise gap4 = (pkt_count - expected_count) & 0xF and, for timestamps
  * that went forwards, delta = tsf_frac - last_frac (64-bit) and
- * n = delta / samples_per_pkt. The timestamps size a gap when cfg.gap_ts,
- * they are comparable, this packet also has samples_per_pkt samples and
- * n >= 2: gap = n - 1.
+ * n = delta / samples_per_pkt. The timestamps size a gap when they are
+ * comparable, this packet also has samples_per_pkt samples and n >= 2:
+ * gap = n - 1.
  *  - gap4 == 0 and (not comparable or delta == samples_per_pkt): no gap;
  *  - gap4 == 0 and comparable timestamps disagree (a loss of 16k packets):
  *    gap = n - 1 when sized, else gap 0 with gap_unknown;
  *  - gap4 != 0: gap = n - 1 when sized; else gap = gap4, flagged gap_unknown
- *    when cfg.gap_ts asked for sizing (the true loss may be gap4 + 16k).
- *    With cfg.gap_ts off the 4-bit count is taken as is, not flagged.
+ *    when cfg.gap_ts is on (the true loss may be gap4 + 16k). With
+ *    cfg.gap_ts off the 4-bit count is taken as is, not flagged.
  * Every gap or gap_unknown packet does gap_events++ and lost_packets += gap.
  *
- * Limitations: without comparable timestamps a repeated count is a loss of
- * 15 and a reordered packet is a loss. With them a late packet un-counts
- * one loss without checking that it fills a counted hole, so a stale
- * re-send can hide a real loss (gap_events is never decremented). A loss
- * of 16k packets without timestamps is undetectable. A gap_unknown packet
- * may report gap 0: callers must treat out->gap_unknown as a discontinuity.
+ * Limitations: without comparable timestamps (always with cfg.gap_ts off)
+ * a repeated count is a loss of 15 and a reordered packet is a loss. With
+ * them a late packet un-counts one loss without checking that it fills a
+ * counted hole, so a stale re-send can hide a real loss (gap_events is
+ * never decremented). A loss of 16k packets without comparable timestamps
+ * is undetectable. A gap_unknown packet may report gap 0: callers must
+ * treat out->gap_unknown as a discontinuity.
  */
 
 #ifndef DAQIRI_VRT_STREAM_H
