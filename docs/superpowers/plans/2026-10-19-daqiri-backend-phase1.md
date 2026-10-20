@@ -26,7 +26,7 @@
 ## Review Focus
 
 1. A datagram shorter than its header claims (`size_words*4 > len`) must count as malformed and never read past the buffer — pinned in Task 3 (`test_vrt_prologue`, truncated vectors).
-2. Losing exactly 16·k packets with no timestamp must not be reported as zero loss silently — pinned in Task 4 (`test_vrt_gap`, "ambiguous" case asserts `gap_events` increments and `lost_packets` stays 0 only when `gap_ts` is off and the result flags `DQ_VRT_GAP_UNKNOWN`).
+2. Losing exactly 16·k packets with no usable timestamp must not be reported as zero loss silently — pinned in Task 4 (`test_vrt_gap`, "ambiguous" case: with timestamps present but not sizing the gap, `gap_events` increments and the result flags `gap_unknown`). Amended after the final review: `gap_ts=0` now disables all timestamp use by design, so with `gap_ts=0` a 16·k loss is undetectable by the 4-bit rule and this is documented as the escape-hatch trade-off.
 3. An app that stops enqueuing blocks while the sender keeps sending must see `daqiri_rx_dropped_no_block` grow and must never have a dequeued block overwritten — pinned in Task 7 (`test_vrt_loopback`, "slow consumer" case).
 4. `iio_context_destroy` while a VRT buffer is open must join the poller and not crash on module unload — pinned in Task 6 (`test_daqiri_lifecycle`).
 5. A board running v0.25 iiod (no `BINARY` support) under `framing=iiod` must stream through the ASCII `readbuf` path instead of failing with `-ENOSYS` — pinned by the manual gate in Task 5 step 8 (no software v0 peer exists; iiod-emu is v1-only).
