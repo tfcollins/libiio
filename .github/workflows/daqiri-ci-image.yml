@@ -36,3 +36,5 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ steps.tag.outputs.ref }}-cuda13.4
             ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}

@@ -17,6 +17,8 @@ COPY CI/daqiri/build-daqiri.sh CI/daqiri/DAQIRI_REF /tmp/
 RUN /tmp/build-daqiri.sh /opt/daqiri ""
 
 FROM nvidia/cuda:13.4.3-runtime-ubuntu22.04
+LABEL org.opencontainers.image.description="libiio DAQIRI backend CI image (CUDA runtime + DAQIRI)" \
+      org.opencontainers.image.licenses="LGPL-2.1-or-later"
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
