@@ -186,9 +186,13 @@ packets that arrived before the stream was started are dropped, not counted.
 | `daqiri_rx_overrun_events` | Host overruns: times packets started being dropped for lack of a queued block after a packet had been delivered (one per episode, not per packet). Each one fails (`lossy=0`) or flags (`lossy=1`) the next block. |
 | `daqiri_rx_foreign_packets` | Packets of another Stream ID. |
 | `daqiri_rx_context_packets` | Context packets, dropped. |
-| `daqiri_rx_malformed` | Datagrams that are not valid VITA 49 packets (for example truncated), skipped. |
+| `daqiri_rx_malformed` | Datagrams that are not valid VITA 49 packets (for example truncated, or longer or shorter than their packet size field), skipped. |
 | `daqiri_rx_late_packets` | Packets that arrived after a later one (reordered), dropped. |
 | `daqiri_rx_duplicate_packets` | Repeated packets, dropped. |
+| `daqiri_rx_l2_rejected` | Raw engines: frames that are not Ethernet (at most one VLAN tag) / IPv4 without options or fragments / UDP with consistent lengths, dropped before the VITA header is looked at. |
+| `daqiri_rx_l2_last_reason` | Why the last of those was rejected (`truncated`, `not-ipv4`, `qinq`, `bad-ihl`, `not-udp`, `fragment`, `bad-ip-len`, `bad-udp-len`); `none` while nothing was. |
+| `daqiri_rx_vlan_packets` | Raw engines: accepted frames that carried a VLAN tag. |
+| `daqiri_rx_hds_packets` | Raw engines: frames that passed the header checks and came in two segments (header-data split). A frame whose first segment does not hold all the headers, the VITA prologue and whole samples counts in `daqiri_rx_malformed`, and here as well when it holds the headers. |
 | `daqiri_rx_zero_filled_bytes` | Bytes zero-filled for lost packets (`lossy=1`). |
 | `daqiri_blocks_completed` | Blocks filled. |
 | `daqiri_blocks_failed` | Blocks completed with an error (`-EIO`, `-EPROTO`, ...); cancelled blocks are not counted. |
@@ -197,7 +201,7 @@ packets that arrived before the stream was started are dropped, not counted.
 | `daqiri_last_error` | Last error, as a negative errno (0 if none). |
 | `daqiri_lossy` | The `lossy` setting. Read/write. |
 | `daqiri_mem_domain` | `host`, `pinned` or `device`. |
-| `daqiri_engine_kind` | DAQIRI engine in use, for example `socket`. |
+| `daqiri_engine_kind` | DAQIRI engine in use: `socket`, `dpdk` or `ibverbs`. |
 
 The context also has the static attributes `uri`, `ip,ip-addr`, `daqiri,yaml`,
 `daqiri,framing`, `daqiri,mem`, `daqiri,engine` and `daqiri,version`.

@@ -9,6 +9,13 @@
  * the VRT sequence tracker and assembles the payloads into the blocks the
  * application queued, in order.
  *
+ * Raw queues (dpdk, ibverbs) hand over Ethernet frames: each is validated
+ * down to UDP first (daqiri-l2.h); a rejected frame is counted
+ * (l2_rejected, with the reason of the last one) and never parsed. With
+ * header-data split, segment 0 must hold the Ethernet/IPv4/UDP headers, the
+ * VRT prologue and whole samples, segment 1 the rest of the payload; a
+ * frame cut anywhere else is malformed.
+ *
  * Block states:
  *   FREE -enqueue-> QUEUED -poller-> FILLING -full-> DONE -dequeue-> FREE
  *   a gap or an overrun with lossy=0, or a stream failure:
@@ -56,6 +63,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "daqiri-l2.h"
 #include "daqiri-private.h"
 #include "daqiri-vrt-stream.h"
 
@@ -75,10 +83,15 @@
 /* Stale bursts dropped at enable, at most (the sender may never pause) */
 #define DQ_VRT_DRAIN_MAX 1024
 
+/* Ethernet, one VLAN tag, IPv4 and UDP headers: segment 0 of a split frame
+ * shorter than this cannot hold them and a VRT prologue */
+#define DQ_VRT_L2_HDR_MAX 46
+
 struct dq_vrt_block {
 	struct dq_vrt_block *next;
 	void *data;
 	size_t size;
+	size_t mapped; /* from dq_mem_alloc(), for dq_mem_free() */
 	enum {
 		DQ_BLK_FREE,
 		DQ_BLK_QUEUED,
@@ -121,9 +134,14 @@ struct dq_vrt_buffer {
 	uint64_t blocks_completed, blocks_failed, blocks_with_gaps;
 	int last_error;
 
+	/* Raw queues */
+	uint64_t l2_rejected, vlan_packets, hds_packets;
+	enum dq_l2_status l2_last; /* reason of the last rejection */
+
 	/* Poller only */
 	struct dq_pkt *pkts;
 	unsigned int pkts_cap;
+	uint8_t *split; /* DQ_VRT_CARRY_CAP: a split payload made contiguous */
 };
 
 enum dq_vrt_attr {
@@ -139,6 +157,10 @@ enum dq_vrt_attr {
 	DQ_ATTR_RX_ZERO_FILLED_BYTES,
 	DQ_ATTR_RX_LATE_PACKETS,
 	DQ_ATTR_RX_DUPLICATE_PACKETS,
+	DQ_ATTR_RX_L2_REJECTED,
+	DQ_ATTR_RX_L2_LAST_REASON,
+	DQ_ATTR_RX_VLAN_PACKETS,
+	DQ_ATTR_RX_HDS_PACKETS,
 	DQ_ATTR_BLOCKS_COMPLETED,
 	DQ_ATTR_BLOCKS_FAILED,
 	DQ_ATTR_BLOCKS_WITH_GAPS,
@@ -163,6 +185,10 @@ const char *const dq_vrt_attr_names[] = {
 	[DQ_ATTR_RX_ZERO_FILLED_BYTES] = "daqiri_rx_zero_filled_bytes",
 	[DQ_ATTR_RX_LATE_PACKETS] = "daqiri_rx_late_packets",
 	[DQ_ATTR_RX_DUPLICATE_PACKETS] = "daqiri_rx_duplicate_packets",
+	[DQ_ATTR_RX_L2_REJECTED] = "daqiri_rx_l2_rejected",
+	[DQ_ATTR_RX_L2_LAST_REASON] = "daqiri_rx_l2_last_reason",
+	[DQ_ATTR_RX_VLAN_PACKETS] = "daqiri_rx_vlan_packets",
+	[DQ_ATTR_RX_HDS_PACKETS] = "daqiri_rx_hds_packets",
 	[DQ_ATTR_BLOCKS_COMPLETED] = "daqiri_blocks_completed",
 	[DQ_ATTR_BLOCKS_FAILED] = "daqiri_blocks_failed",
 	[DQ_ATTR_BLOCKS_WITH_GAPS] = "daqiri_blocks_with_gaps",
@@ -335,14 +361,31 @@ static void dq_vrt_deliver(struct dq_vrt_buffer *v, const uint8_t *payload, size
 	}
 }
 
-static void dq_vrt_packet(struct dq_vrt_buffer *v, const uint8_t *data, size_t len)
+void dq_vrt_packet_segs(struct dq_vrt_buffer *v, const uint8_t *hdr, uint32_t hdr_len,
+		const uint8_t *payload, uint32_t payload_len)
 {
+	size_t head, prologue;
+	const uint8_t *data;
 	struct dq_vrt_data out;
 	bool flag = false;
 	uint32_t gap;
 	int ret;
 
-	ret = dq_vrt_rx_packet(&v->rx, data, len, &out);
+	if (payload_len) {
+		/* Header-data split: the prologue and whole samples in hdr,
+		 * and no more than a UDP payload in all. Checked before the
+		 * tracker sees the packet, so that a cut packet changes no
+		 * sequence state: the next one reports it as lost. */
+		prologue = dq_vrt_prologue_size(hdr, hdr_len);
+		if (!prologue || hdr_len < prologue || (hdr_len - prologue) % v->cfg.sample_size ||
+				(size_t)hdr_len + payload_len > DQ_VRT_CARRY_CAP) {
+			v->rx.c.malformed++;
+			return;
+		}
+	}
+
+	/* -EPROTO from here on is a layout mismatch, never a cut prologue */
+	ret = dq_vrt_rx_header(&v->rx, hdr, hdr_len, (size_t)hdr_len + payload_len, &out);
 	if (ret == DQ_VRT_SKIP)
 		return;
 	if (ret < 0) {
@@ -382,7 +425,68 @@ static void dq_vrt_packet(struct dq_vrt_buffer *v, const uint8_t *data, size_t l
 		gap = 0;
 	}
 
-	dq_vrt_deliver(v, out.payload, out.len, gap, flag);
+	data = out.payload;
+	if (payload_len) {
+		/* The payload bytes in hdr, then those in the second segment;
+		 * a trailer word is left out. Pushed as one payload: the
+		 * assembler sizes a lossy zero-fill from the length pushed. */
+		head = hdr_len - (size_t)(out.payload - hdr);
+		if (!head) {
+			data = payload;
+		} else if (head < out.len) {
+			if (!v->split) {
+				v->split = malloc(DQ_VRT_CARRY_CAP);
+				if (!v->split) {
+					dq_vrt_fail_stream(v, -ENOMEM);
+					return;
+				}
+			}
+			memcpy(v->split, out.payload, head);
+			memcpy(v->split + head, payload, out.len - head);
+			data = v->split;
+		}
+	}
+
+	dq_vrt_deliver(v, data, out.len, gap, flag);
+}
+
+/* One frame of a raw queue: Ethernet, at most one VLAN tag, IPv4, UDP and
+ * VRT, segment 0 then, with header-data split, segment 1 */
+static void dq_vrt_raw_packet(struct dq_vrt_buffer *v, const struct dq_pkt *pkt)
+{
+	uint32_t frame_len = pkt->len, hdr_len;
+	enum dq_l2_status st;
+	struct dq_l2_info l2;
+
+	if (pkt->payload_len) {
+		/* The headers are all in segment 0, the lengths they give
+		 * cover both segments. The parser reads no further than the
+		 * headers, which a segment 0 this long holds. */
+		if (pkt->len < DQ_VRT_L2_HDR_MAX) {
+			v->rx.c.malformed++;
+			return;
+		}
+		frame_len += pkt->payload_len;
+	}
+
+	st = dq_l2_parse(pkt->data, frame_len, &l2);
+	if (st != DQ_L2_OK) {
+		v->l2_rejected++;
+		v->l2_last = st;
+		return;
+	}
+	if (l2.vlan_id)
+		v->vlan_packets++;
+	if (pkt->payload_len)
+		v->hds_packets++;
+
+	/* l2.payload_len is the UDP payload: no Ethernet padding, and with
+	 * header-data split it spans both segments */
+	hdr_len = pkt->len - l2.payload_off;
+	if (hdr_len > l2.payload_len)
+		hdr_len = l2.payload_len;
+	dq_vrt_packet_segs(v, pkt->data + l2.payload_off, hdr_len, pkt->payload,
+			l2.payload_len - hdr_len);
 }
 
 static void dq_vrt_burst(struct dq_vrt_buffer *v, const struct dq_burst *b)
@@ -407,11 +511,10 @@ static void dq_vrt_burst(struct dq_vrt_buffer *v, const struct dq_burst *b)
 
 	pthread_mutex_lock(&v->lock);
 	for (i = 0; i < n; i++) {
-		if (v->pkts[i].len < b->l2_offset) {
-			v->rx.c.malformed++;
-			continue;
-		}
-		dq_vrt_packet(v, v->pkts[i].data + b->l2_offset, v->pkts[i].len - b->l2_offset);
+		if (b->raw)
+			dq_vrt_raw_packet(v, &v->pkts[i]);
+		else
+			dq_vrt_packet_segs(v, v->pkts[i].data, v->pkts[i].len, NULL, 0);
 	}
 	pthread_mutex_unlock(&v->lock);
 }
@@ -642,6 +745,7 @@ void dq_vrt_close(struct dq_vrt_buffer *v)
 	pthread_cond_destroy(&v->cond);
 	pthread_mutex_destroy(&v->lock);
 	close(v->wake_fd);
+	free(v->split);
 	free(v->pkts);
 	dq_asm_fini(&v->as);
 	free(v);
@@ -660,7 +764,7 @@ struct dq_vrt_block *dq_vrt_block_new(struct dq_vrt_buffer *v, size_t size, void
 	if (!b)
 		return iio_ptr(-ENOMEM);
 
-	ret = dq_mem_alloc(v->mem, v->gpu, size, &b->data);
+	ret = dq_mem_alloc(v->mem, v->gpu, size, &b->data, &b->mapped);
 	if (ret) {
 		free(b);
 		return iio_ptr(ret);
@@ -694,7 +798,7 @@ void dq_vrt_block_free(struct dq_vrt_buffer *v, struct dq_vrt_block *b)
 	}
 	pthread_mutex_unlock(&v->lock);
 
-	dq_mem_free(v->mem, b->data, b->size);
+	dq_mem_free(v->mem, b->data, b->mapped);
 	free(b);
 }
 
@@ -811,7 +915,9 @@ ssize_t dq_vrt_read_attr(struct dq_vrt_buffer *v, const char *name, char *dst, s
 {
 	struct dq_vrt_counters c;
 	uint64_t u = 0, zero_filled, dropped, overruns, completed, failed, with_gaps;
+	uint64_t l2_rejected, vlan, hds;
 	int idx = dq_vrt_attr_index(name), last_error, lossy, n;
+	enum dq_l2_status l2_last;
 	uint32_t sid;
 
 	if (idx < 0)
@@ -826,6 +932,10 @@ ssize_t dq_vrt_read_attr(struct dq_vrt_buffer *v, const char *name, char *dst, s
 	failed = v->blocks_failed;
 	with_gaps = v->blocks_with_gaps;
 	last_error = v->last_error;
+	l2_rejected = v->l2_rejected;
+	l2_last = v->l2_last;
+	vlan = v->vlan_packets;
+	hds = v->hds_packets;
 	lossy = v->as.lossy;
 	sid = v->cfg.sid_mask ? v->cfg.sid : v->rx.sid_locked ? v->rx.sid : 0;
 	pthread_mutex_unlock(&v->lock);
@@ -867,6 +977,18 @@ ssize_t dq_vrt_read_attr(struct dq_vrt_buffer *v, const char *name, char *dst, s
 	case DQ_ATTR_RX_DUPLICATE_PACKETS:
 		u = c.duplicates;
 		break;
+	case DQ_ATTR_RX_L2_REJECTED:
+		u = l2_rejected;
+		break;
+	case DQ_ATTR_RX_L2_LAST_REASON:
+		n = snprintf(dst, len, "%s", l2_rejected ? dq_l2_status_name(l2_last) : "none");
+		goto out;
+	case DQ_ATTR_RX_VLAN_PACKETS:
+		u = vlan;
+		break;
+	case DQ_ATTR_RX_HDS_PACKETS:
+		u = hds;
+		break;
 	case DQ_ATTR_BLOCKS_COMPLETED:
 		u = completed;
 		break;
@@ -888,7 +1010,8 @@ ssize_t dq_vrt_read_attr(struct dq_vrt_buffer *v, const char *name, char *dst, s
 	case DQ_ATTR_MEM_DOMAIN:
 		n = snprintf(dst, len, "%s", dq_mem_name(v->mem));
 		goto out;
-	default: /* DQ_ATTR_ENGINE_KIND */
+	case DQ_ATTR_ENGINE_KIND:
+	default:
 		n = snprintf(dst, len, "%s", v->engine_kind);
 		goto out;
 	}

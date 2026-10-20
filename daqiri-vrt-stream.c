@@ -54,17 +54,49 @@ static bool dq_vrt_ts_kind(uint8_t tsf)
 	return tsf == DQ_VRT_TSF_SAMPLE_COUNT || tsf == DQ_VRT_TSF_FREE_RUNNING;
 }
 
-int dq_vrt_rx_packet(
-		struct dq_vrt_rx *rx, const uint8_t *dgram, size_t len, struct dq_vrt_data *out)
+size_t dq_vrt_prologue_size(const uint8_t *hdr, size_t hdr_len)
+{
+	uint32_t w0;
+	uint8_t type;
+	size_t n = 4;
+
+	if (hdr_len < 4)
+		return 0;
+
+	/* The optional words of dq_vrt_parse(), in the same order */
+	w0 = dq_vrt_be32(hdr);
+	type = w0 >> 28;
+	if ((type & 1) || type >= DQ_VRT_IF_CONTEXT)
+		n += 4; /* Stream ID */
+	if ((w0 >> 27) & 1)
+		n += 8; /* Class ID */
+	if ((w0 >> 22) & 3)
+		n += 4; /* integer seconds */
+	if ((w0 >> 20) & 3)
+		n += 8; /* fractional timestamp */
+
+	return n;
+}
+
+int dq_vrt_rx_header(struct dq_vrt_rx *rx, const uint8_t *hdr, size_t hdr_len, size_t total_len,
+		struct dq_vrt_data *out)
 {
 	struct dq_vrt_prologue p;
-	size_t ss = rx->cfg.sample_size;
+	size_t ss = rx->cfg.sample_size, need;
 	uint64_t spp, delta, n, gap = 0;
 	bool cmp, std, unknown = false;
 	unsigned int gap4 = 0;
 	int ret;
 
-	if (dq_vrt_parse(dgram, len, &p)) {
+	if (hdr_len < total_len) {
+		/* Split: dq_vrt_parse() reads the prologue and nothing past
+		 * it, so it stays inside hdr once hdr holds the prologue */
+		need = dq_vrt_prologue_size(hdr, hdr_len);
+		if (!need || hdr_len < need)
+			return -EPROTO;
+	}
+
+	if (dq_vrt_parse(hdr, total_len, &p) || (size_t)p.size_words * 4 != total_len) {
 		rx->c.malformed++;
 		return DQ_VRT_SKIP;
 	}
@@ -139,9 +171,15 @@ int dq_vrt_rx_packet(
 	rx->c.packets++;
 	rx->c.bytes += p.payload_bytes;
 
-	out->payload = dgram + p.prologue_bytes;
+	out->payload = hdr + p.prologue_bytes;
 	out->len = p.payload_bytes;
 	out->gap = gap > UINT32_MAX ? UINT32_MAX : (uint32_t)gap;
 	out->gap_unknown = unknown;
 	return DQ_VRT_DATA;
+}
+
+int dq_vrt_rx_packet(
+		struct dq_vrt_rx *rx, const uint8_t *dgram, size_t len, struct dq_vrt_data *out)
+{
+	return dq_vrt_rx_header(rx, dgram, len, len, out);
 }

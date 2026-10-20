@@ -9,7 +9,8 @@
  * DAQIRI and CUDA dependencies so it can be unit tested on its own.
  *
  * Per datagram, in order:
- *  - not parseable (dq_vrt_parse() fails): malformed++, SKIP;
+ *  - not parseable (dq_vrt_parse() fails) or a size word that does not
+ *    account for exactly the datagram: malformed++, SKIP;
  *  - IF/extension context packet: context++, SKIP;
  *  - Stream ID: with cfg.sid_mask != 0 the packet needs a Stream ID with
  *    (stream_id & sid_mask) == (cfg.sid & sid_mask); without a mask the
@@ -119,7 +120,31 @@ struct dq_vrt_data {
 void dq_vrt_rx_init(struct dq_vrt_rx *rx, const struct dq_vrt_cfg *cfg);
 
 /*
- * Process one datagram (len bytes at dgram, starting at the VRT header).
+ * Prologue bytes (header word through the timestamps, the Stream ID and
+ * Class ID included) that the header word at hdr announces; 0 when
+ * hdr_len < 4. Says nothing about whether the packet is valid.
+ */
+size_t dq_vrt_prologue_size(const uint8_t *hdr, size_t hdr_len);
+
+/*
+ * Process one packet of total_len bytes of which only the first hdr_len,
+ * at hdr, are contiguous: header-data split put the rest elsewhere. The
+ * prologue is read from hdr alone; out->payload points into hdr, at the
+ * first payload byte, even when hdr_len ends before it. The size word must
+ * account for exactly total_len bytes. Returns:
+ *  - DQ_VRT_DATA (out filled in) or DQ_VRT_SKIP (counted, out untouched),
+ *    as dq_vrt_rx_packet(); a packet that is not valid VITA 49 (too short,
+ *    or a size word other than total_len) is malformed, SKIP;
+ *  - -EPROTO, nothing counted, out untouched: hdr_len < total_len and the
+ *    split cut the prologue (hdr_len < dq_vrt_prologue_size()), or the
+ *    payload does not fit sample_size as for dq_vrt_rx_packet().
+ */
+int dq_vrt_rx_header(struct dq_vrt_rx *rx, const uint8_t *hdr, size_t hdr_len, size_t total_len,
+		struct dq_vrt_data *out);
+
+/*
+ * Process one datagram (len bytes at dgram, starting at the VRT header):
+ * dq_vrt_rx_header(rx, dgram, len, len, out).
  * Returns DQ_VRT_DATA (out filled in), DQ_VRT_SKIP (counted, out untouched)
  * or -EPROTO (payload not a multiple of sample_size, or packet class
  * incompatible with sample_size; nothing counted, out untouched).

@@ -40,7 +40,10 @@ struct dq_engine {
 struct dq_rxq {
 	dq_engine *e = nullptr;
 	int port = 0, queue = 0;
-	unsigned int l2_offset = 0;
+	/* Packets start at the Ethernet header (dpdk, ibverbs) */
+	bool raw = false;
+	/* Header-data split: two memory regions, segment 0 then 1 */
+	bool hds = false;
 
 	/* Held across every DAQIRI call on this queue. Once the process
 	 * exits, dead is set and nothing calls into DAQIRI any more. */
@@ -155,13 +158,25 @@ int pin_module(char *err, size_t errlen)
 	return 0;
 }
 
+/* What get_port_id() is asked for an interface of the YAML */
+const std::string &iface_key(const daqiri::InterfaceConfig &ifc)
+{
+	return ifc.name_.empty() ? ifc.address_ : ifc.name_;
+}
+
 const daqiri::InterfaceConfig *find_iface(const dq_engine *e, int port)
 {
 	for (const auto &ifc : e->cfg.ifs_)
-		if (daqiri::get_port_id(ifc.name_.empty() ? ifc.address_ : ifc.name_) == port)
+		if (daqiri::get_port_id(iface_key(ifc)) == port)
 			return &ifc;
 
 	return nullptr;
+}
+
+/* Before daqiri_init() resolves it, engine_type may still be UNKNOWN */
+daqiri::EngineType engine_of(const daqiri::CommonConfig &c)
+{
+	return daqiri::is_explicit_engine_type(c.engine_type) ? c.engine_type : c.engine;
 }
 
 /* Parse only: never initialises the engine. */
@@ -226,10 +241,7 @@ extern "C" const char *dq_yaml_engine_kind(const char *path)
 		if (parse(path, cfg, nullptr, 0))
 			return "unknown";
 
-		/* Before daqiri_init() resolves it, engine_type may still be UNKNOWN */
-		daqiri::EngineType engine = daqiri::is_explicit_engine_type(c.engine_type)
-							    ? c.engine_type
-							    : c.engine;
+		daqiri::EngineType engine = engine_of(c);
 
 		switch (c.stream_type) {
 		case daqiri::StreamType::SOCKET:
@@ -342,18 +354,21 @@ extern "C" void dq_engine_release(struct dq_engine *e)
 extern "C" int dq_engine_get_port(struct dq_engine *e, const char *iface, int *port_id)
 {
 	try {
-		std::string key;
+		const daqiri::InterfaceConfig *ifc = nullptr;
 		int port;
 
-		if (iface && iface[0]) {
-			key = iface;
-		} else if (!e->cfg.ifs_.empty()) {
-			const daqiri::InterfaceConfig &ifc = e->cfg.ifs_.front();
-
-			key = ifc.name_.empty() ? ifc.address_ : ifc.name_;
+		/* By name, or by address: a PCI BDF (raw engines) or the
+		 * socket address */
+		for (const auto &it : e->cfg.ifs_) {
+			if (!iface || !iface[0] || it.name_ == iface || it.address_ == iface) {
+				ifc = &it;
+				break;
+			}
 		}
+		if (!ifc)
+			return -EINVAL;
 
-		port = daqiri::get_port_id(key);
+		port = daqiri::get_port_id(iface_key(*ifc));
 		if (port < 0)
 			return -EINVAL;
 
@@ -368,8 +383,10 @@ extern "C" int dq_rxq_open(struct dq_engine *e, int port_id, int queue_id, struc
 {
 	try {
 		const daqiri::CommonConfig &c = e->cfg.common_;
+		const daqiri::RxQueueConfig *qcfg = nullptr;
 		const daqiri::InterfaceConfig *ifc;
-		bool found = false;
+		daqiri::EngineType engine = engine_of(c);
+		bool raw;
 
 		std::lock_guard<std::mutex> lock(g_lock);
 
@@ -380,15 +397,28 @@ extern "C" int dq_rxq_open(struct dq_engine *e, int port_id, int queue_id, struc
 		if (!ifc)
 			return -EINVAL;
 		for (const auto &q : ifc->rx_.queues_)
-			found |= q.common_.id_ == queue_id;
-		if (!found)
+			if (q.common_.id_ == queue_id)
+				qcfg = &q;
+		if (!qcfg)
 			return -EINVAL;
 
-		/* One datagram per packet, VRT header first (l2_offset 0). The
-		 * raw engines need L2/L3/L4 validation and a non-zero
-		 * l2_offset; they come with a later phase. */
-		if (c.stream_type != daqiri::StreamType::SOCKET ||
-				c.protocol != daqiri::SocketProtocol::UDP)
+		/* Socket UDP: one datagram per packet, VRT header first.
+		 * Raw (dpdk, ibverbs): Ethernet frames, which the poller
+		 * validates down to UDP. RoCE, TCP and RDMA are not VRT. */
+		if (c.stream_type == daqiri::StreamType::SOCKET &&
+				c.protocol == daqiri::SocketProtocol::UDP &&
+				engine != daqiri::EngineType::RDMA)
+			raw = false;
+		else if (c.stream_type == daqiri::StreamType::RAW &&
+				(engine == daqiri::EngineType::DPDK ||
+						engine == daqiri::EngineType::IBVERBS))
+			raw = true;
+		else
+			return -ENOTSUP;
+
+		/* A raw queue with two regions splits every packet in two
+		 * segments (header-data split); more are not supported */
+		if (raw && qcfg->common_.mrs_.size() > 2)
 			return -ENOTSUP;
 
 		auto key = std::make_pair(port_id, queue_id);
@@ -399,6 +429,8 @@ extern "C" int dq_rxq_open(struct dq_engine *e, int port_id, int queue_id, struc
 		q->e = e;
 		q->port = port_id;
 		q->queue = queue_id;
+		q->raw = raw;
+		q->hds = raw && qcfg->common_.mrs_.size() == 2;
 		e->rxqs[key] = q.get();
 		*out = q.release();
 		return 0;
@@ -444,7 +476,7 @@ extern "C" int dq_rxq_poll(struct dq_rxq *q, struct dq_burst *b)
 		b->q = q;
 		b->handle = burst;
 		b->nb_pkts = (unsigned)daqiri::get_num_packets(burst);
-		b->l2_offset = q->l2_offset;
+		b->raw = q->raw;
 		return 0;
 	} catch (...) {
 		return -EIO;
@@ -463,9 +495,16 @@ extern "C" unsigned dq_burst_pkts(const struct dq_burst *b, struct dq_pkt *out, 
 			return 0;
 
 		for (i = 0; i < n; i++) {
-			out[i].data = static_cast<const uint8_t *>(
-					daqiri::get_packet_ptr(burst, (int)i));
-			out[i].len = daqiri::get_packet_length(burst, (int)i);
+			void *seg0 = daqiri::get_segment_packet_ptr(burst, 0, (int)i);
+			void *seg1 = b->q->hds ? daqiri::get_segment_packet_ptr(burst, 1, (int)i)
+					       : nullptr;
+
+			out[i].data = static_cast<const uint8_t *>(seg0);
+			out[i].len = seg0 ? daqiri::get_segment_packet_length(burst, 0, (int)i) : 0;
+			out[i].payload = static_cast<const uint8_t *>(seg1);
+			out[i].payload_len =
+					seg1 ? daqiri::get_segment_packet_length(burst, 1, (int)i)
+					     : 0;
 		}
 	} catch (...) {
 		return 0;
@@ -492,17 +531,39 @@ extern "C" void dq_burst_free(struct dq_burst *b)
 }
 
 #define DQ_PAGE 4096
+#define DQ_HUGE ((size_t)2 << 20)
 
-extern "C" int dq_mem_alloc(enum dq_mem k, int gpu, size_t size, void **ptr)
+/* <linux/mman.h> has it, but clashes with <sys/mman.h> */
+#ifndef MAP_HUGE_2MB
+#define MAP_HUGE_2MB (21 << MAP_HUGE_SHIFT)
+#endif
+
+extern "C" int dq_mem_alloc(enum dq_mem k, int gpu, size_t size, void **ptr, size_t *mapped)
 {
 	size_t len = (size + DQ_PAGE - 1) & ~(size_t)(DQ_PAGE - 1);
 	cudaError_t ce;
 	void *p = nullptr;
 
 	(void)gpu; /* portable pinned memory is usable from every device */
+	*mapped = 0;
 
 	switch (k) {
 	case DQ_MEM_HOST:
+		if (size >= DQ_HUGE) {
+			/* 2 MB hugetlb pages when the pool has enough free,
+			 * faulted in now rather than on the first packet */
+			size_t hlen = (size + DQ_HUGE - 1) & ~(DQ_HUGE - 1);
+
+			p = mmap(nullptr, hlen, PROT_READ | PROT_WRITE,
+					MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB |
+							MAP_POPULATE,
+					-1, 0);
+			if (p != MAP_FAILED) {
+				*mapped = hlen;
+				break;
+			}
+		}
+
 		p = aligned_alloc(DQ_PAGE, len ? len : DQ_PAGE);
 		if (!p)
 			return -ENOMEM;
@@ -517,7 +578,7 @@ extern "C" int dq_mem_alloc(enum dq_mem k, int gpu, size_t size, void **ptr)
 		}
 		break;
 	default:
-		/* mem=device needs a raw engine with header-data split */
+		/* mem=device: header-data split into GPU memory, a later phase */
 		return -ENOTSUP;
 	}
 
@@ -525,13 +586,14 @@ extern "C" int dq_mem_alloc(enum dq_mem k, int gpu, size_t size, void **ptr)
 	return 0;
 }
 
-extern "C" void dq_mem_free(enum dq_mem k, void *ptr, size_t size)
+extern "C" void dq_mem_free(enum dq_mem k, void *ptr, size_t mapped)
 {
-	(void)size;
-
 	switch (k) {
 	case DQ_MEM_HOST:
-		free(ptr);
+		if (mapped)
+			munmap(ptr, mapped);
+		else
+			free(ptr);
 		break;
 	case DQ_MEM_PINNED:
 		if (ptr)

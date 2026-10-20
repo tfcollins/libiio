@@ -236,4 +236,19 @@ if (WITH_TESTS AND NOT WIN32)
                    C_EXTENSIONS OFF)
     add_test(NAME test_l2_parse COMMAND test_l2_parse)
     set_tests_properties(test_l2_parse PROPERTIES LABELS daqiri)
+
+    add_executable(test_vrt_hds_split test_vrt_hds_split.c)
+    target_link_libraries(test_vrt_hds_split PRIVATE iio_daqiri_framing)
+    target_include_directories(test_vrt_hds_split
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+    target_compile_definitions(
+        test_vrt_hds_split
+        PRIVATE TESTS_VRT_DIR="${CMAKE_SOURCE_DIR}/tests/resources/vrt")
+    set_target_properties(
+        test_vrt_hds_split
+        PROPERTIES C_STANDARD 99
+                   C_STANDARD_REQUIRED ON
+                   C_EXTENSIONS OFF)
+    add_test(NAME test_vrt_hds_split COMMAND test_vrt_hds_split)
+    set_tests_properties(test_vrt_hds_split PROPERTIES LABELS daqiri)
 endif ()

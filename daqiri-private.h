@@ -75,7 +75,8 @@ struct iio_context_pdata {
 	/* Resolved host and management port; framing=iiod buffers connect here */
 	char host[DQ_HOST_MAX];
 	char port[sizeof("65535")];
-	/* What the YAML selects ("socket", ...), "none" without a YAML */
+	/* What the YAML selects ("socket", "dpdk", "ibverbs", ...), "none"
+	 * without a YAML */
 	const char *engine_kind;
 
 	/* framing=vrt: protects engine and vrt_bufs */
@@ -133,26 +134,31 @@ const char *dq_yaml_engine_kind(const char *path);
  */
 int dq_engine_acquire(const char *yaml, struct dq_engine **out, char *err, size_t errlen);
 void dq_engine_release(struct dq_engine *e);
-/* <iface> is an interface name or address of the YAML; empty: the first */
+/* <iface> matches the name or the address (PCI BDF on the raw engines,
+ * socket address) of an interface of the YAML; empty: the first */
 int dq_engine_get_port(struct dq_engine *e, const char *iface, int *port_id);
 
-/* One owner per (port, queue): a second open is -EBUSY. UDP socket engine
- * only in this phase (-ENOTSUP otherwise). */
+/* One owner per (port, queue): a second open is -EBUSY. Socket engine UDP
+ * queues, and raw queues of the dpdk and ibverbs engines; a raw queue with
+ * two memory regions is header-data split. -ENOTSUP for anything else
+ * (RoCE, TCP, RDMA, a raw queue with more than two regions). */
 int dq_rxq_open(struct dq_engine *e, int port_id, int queue_id, struct dq_rxq **out);
 void dq_rxq_close(struct dq_rxq *q);
 
 struct dq_pkt {
-	const uint8_t *data;
+	const uint8_t *data; /* segment 0: whole packet (single segment) or headers (HDS) */
 	uint32_t len;
+	const uint8_t *payload; /* segment 1 when HDS, else NULL */
+	uint32_t payload_len;
 };
 
-/* One burst popped from a queue. l2_offset: bytes in front of the VRT
- * header (0 on the socket engine). */
+/* One burst popped from a queue. raw: the packets start at the Ethernet
+ * header (dpdk, ibverbs), else at the VRT header (socket). */
 struct dq_burst {
 	struct dq_rxq *q;
 	void *handle;
 	unsigned nb_pkts;
-	unsigned l2_offset;
+	bool raw;
 };
 
 /* 0 with a burst to free, -EAGAIN when the queue is empty, -ESHUTDOWN once
@@ -164,10 +170,13 @@ unsigned dq_burst_pkts(const struct dq_burst *b, struct dq_pkt *out, unsigned ma
 /* Does nothing once the process exits */
 void dq_burst_free(struct dq_burst *b);
 
-/* host: page aligned, THP advised; pinned: cudaHostAlloc (-ENOTSUP without
- * a usable CUDA driver); device: -ENOTSUP in this phase */
-int dq_mem_alloc(enum dq_mem k, int gpu, size_t size, void **ptr);
-void dq_mem_free(enum dq_mem k, void *ptr, size_t size);
+/* host: 2 MB hugetlb pages from size 2 MB on when the pool has them,
+ * otherwise page aligned, THP advised; pinned: cudaHostAlloc (-ENOTSUP
+ * without a usable CUDA driver); device: -ENOTSUP in this phase. *mapped is
+ * the length of a hugetlb mapping, 0 for anything else: hand it back to
+ * dq_mem_free(). */
+int dq_mem_alloc(enum dq_mem k, int gpu, size_t size, void **ptr, size_t *mapped);
+void dq_mem_free(enum dq_mem k, void *ptr, size_t mapped);
 
 /* framing=vrt streaming (daqiri-vrt.c): one RX poller thread per buffer */
 extern const char *const dq_vrt_attr_names[];
@@ -184,6 +193,15 @@ int dq_vrt_enqueue(struct dq_vrt_buffer *v, struct dq_vrt_block *b, size_t bytes
 int dq_vrt_dequeue(struct dq_vrt_buffer *v, struct dq_vrt_block *b, bool nonblock, int timeout_ms);
 ssize_t dq_vrt_read_attr(struct dq_vrt_buffer *v, const char *name, char *dst, size_t len);
 int dq_vrt_write_attr(struct dq_vrt_buffer *v, const char *name, const char *src, size_t len);
+
+/*
+ * One VRT packet into the stream of v, which the caller locks (the poller).
+ * The first hdr_len bytes are at hdr; with header-data split payload_len
+ * more follow at payload, otherwise payload_len is 0. A split packet needs
+ * the whole prologue and whole samples in hdr, or it is malformed.
+ */
+void dq_vrt_packet_segs(struct dq_vrt_buffer *v, const uint8_t *hdr, uint32_t hdr_len,
+		const uint8_t *payload, uint32_t payload_len);
 
 #ifdef __cplusplus
 }

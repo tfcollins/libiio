@@ -489,7 +489,8 @@ static ssize_t dq_vrt_attr_read(
 	/* No stream open: what one would start with */
 	if (!strcmp(attr->name, "daqiri_mem_domain"))
 		val = dq_mem_name(pdata->opts.mem);
-	else if (!strcmp(attr->name, "daqiri_engine_kind"))
+	else if (!strcmp(attr->name, "daqiri_engine_kind") ||
+			!strcmp(attr->name, "daqiri_rx_l2_last_reason"))
 		val = "none";
 	else if (!strcmp(attr->name, "daqiri_lossy"))
 		val = pdata->opts.lossy ? "1" : "0";
@@ -777,7 +778,7 @@ static int dq_vrt_open_buffer(struct iio_buffer_pdata *buf, struct iio_channels_
 		return -ENOTSUP;
 	}
 	if (o->mem == DQ_MEM_DEVICE) {
-		dev_err(buf->dev, "mem=device needs a raw engine (not in this version)\n");
+		dev_err(buf->dev, "mem=device is not supported in this version\n");
 		return -ENOTSUP;
 	}
 	if (!o->yaml[0]) {
