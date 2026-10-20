@@ -42,8 +42,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      # Everything the default configure needs: the USB, DNS-SD, ZSTD and
+      # iiod (libaio, flex, bison) defaults stop configuration without them.
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake build-essential libxml2-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake build-essential pkg-config libxml2-dev libzstd-dev \
+            libusb-1.0-0-dev libserialport-dev libavahi-client-dev libaio-dev \
+            flex bison
       - name: Configure and build
         run: |
           cmake -S . -B build -DWITH_TESTS=ON
