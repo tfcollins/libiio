@@ -912,18 +912,22 @@ out:
  * packet; one overrun event). In the 1 s pause after the burst both blocks
  * are dequeued and queued again. The overrun is a gap of unknown size:
  * packet 32 fails block 0 with -EIO and fills block 1, and 33..63 overrun
- * again (a second event).
+ * again (a second event). With lossy=1 block 0 is flagged instead
+ * (blocks_with_gaps, no zeros) and holds packet 32, block 1 holds 33 and
+ * 34..63 overrun again.
  */
-TEST_FUNCTION(slow_consumer)
+static void slow_consumer_case(bool lossy)
 {
 	static const char *const args[] = { "--packets", "64", "--pps", "10000", "--burst-gap-ms",
 		"1000", NULL };
+	/* Packets that reached a block: 0, 1, then 32 (and 33 with lossy=1) */
+	const long delivered = lossy ? 4 : 3;
 	struct lb_case *c = &lc;
 	struct timespec t0;
 	long packets;
 	int ret;
 
-	ret = case_start(c, "", 2, args);
+	ret = case_start(c, lossy ? ",lossy=1" : "", 2, args);
 	CHECK_EQ(ret, 0, "stream started with 2 blocks, sender forked");
 	if (ret)
 		goto out;
@@ -953,24 +957,46 @@ TEST_FUNCTION(slow_consumer)
 	CHECK_EQ(c->o.nb_dropped + c->o.nb_reordered + c->o.nb_duplicated, 0, "oracle: clean");
 	TEST_ASSERT(ms_since(&c->t_start) >= 1000.0, "sender paused 1 s between the bursts");
 
-	CHECK_EQ(iio_block_dequeue(c->blocks[0], false), -EIO, "block 0: -EIO, the overrun");
-	CHECK_EQ(iio_block_dequeue(c->blocks[1], false), 0, "block 1 done");
-	CHECK_EQ(classify(c->blocks[1]), 32, "block 1 is ramp packet 32, whole");
+	if (lossy) {
+		CHECK_EQ(iio_block_dequeue(c->blocks[0], false), 0,
+				"block 0 done: flagged, not failed");
+		CHECK_EQ(classify(c->blocks[0]), 32, "block 0 is ramp packet 32, whole");
+		CHECK_EQ(iio_block_dequeue(c->blocks[1], false), 0, "block 1 done");
+		CHECK_EQ(classify(c->blocks[1]), 33, "block 1 is ramp packet 33, whole");
+	} else {
+		CHECK_EQ(iio_block_dequeue(c->blocks[0], false), -EIO,
+				"block 0: -EIO, the overrun");
+		CHECK_EQ(iio_block_dequeue(c->blocks[1], false), 0, "block 1 done");
+		CHECK_EQ(classify(c->blocks[1]), 32, "block 1 is ramp packet 32, whole");
+	}
 
 	packets = ctr(c, "daqiri_rx_packets");
 	CHECK_EQ(packets, 64, "rx_packets: loopback lost nothing");
-	CHECK_EQ(ctr(c, "daqiri_rx_dropped_no_block"), packets - 3,
-			"dropped_no_block: every packet but 0, 1 and 32");
-	CHECK_EQ(ctr(c, "daqiri_rx_dropped_no_block"), 61, "dropped_no_block == 61");
-	CHECK_EQ(ctr(c, "daqiri_rx_overrun_events"), 2, "overrun events: 2..31 and 33..63");
+	CHECK_EQ(ctr(c, "daqiri_rx_dropped_no_block"), packets - delivered,
+			"dropped_no_block: every packet that reached no block");
+	CHECK_EQ(ctr(c, "daqiri_rx_dropped_no_block"), lossy ? 60 : 61,
+			"dropped_no_block == 61 (60 with lossy=1)");
+	CHECK_EQ(ctr(c, "daqiri_rx_overrun_events"), 2, "overrun events: one per burst");
 	CHECK_EQ(ctr(c, "daqiri_rx_lost_packets"), 0, "lost_packets: nothing lost on the wire");
 	CHECK_EQ(ctr(c, "daqiri_rx_gap_events"), 0, "gap_events: no sequence gap");
-	CHECK_EQ(ctr(c, "daqiri_blocks_completed"), 3, "blocks_completed: packets 0, 1, 32");
-	CHECK_EQ(ctr(c, "daqiri_blocks_failed"), 1, "blocks_failed: the overrun block");
+	CHECK_EQ(ctr(c, "daqiri_rx_zero_filled_bytes"), 0,
+			"zero_filled_bytes: overruns not filled");
+	CHECK_EQ(ctr(c, "daqiri_blocks_completed"), delivered, "blocks_completed");
+	CHECK_EQ(ctr(c, "daqiri_blocks_failed"), lossy ? 0 : 1, "blocks_failed: the -EIO block");
 	CHECK_EQ(ctr(c, "daqiri_blocks_with_gaps"), 1, "blocks_with_gaps: the overrun block");
-	CHECK_EQ(ctr(c, "daqiri_last_error"), -EIO, "last_error: -EIO");
+	CHECK_EQ(ctr(c, "daqiri_last_error"), lossy ? 0 : -EIO, "last_error");
 out:
 	case_close(c);
+}
+
+TEST_FUNCTION(slow_consumer)
+{
+	slow_consumer_case(false);
+}
+
+TEST_FUNCTION(slow_consumer_lossy)
+{
+	slow_consumer_case(true);
 }
 
 /* 32 packets, 500 ms of silence, 32 more: the stream resumes, no loss */
@@ -1048,6 +1074,7 @@ int main(void)
 	RUN_TEST(reorder);
 	RUN_TEST(duplicate);
 	RUN_TEST(slow_consumer);
+	RUN_TEST(slow_consumer_lossy);
 	RUN_TEST(burst_gap);
 
 	unlink(json_path);
