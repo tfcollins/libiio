@@ -119,6 +119,18 @@ queued). If no block is queued when a packet arrives the packet is dropped and
 `daqiri_rx_dropped_no_block` counts it: keep enough blocks queued for your
 packet rate.
 
+Such a host overrun is a gap of unknown size in the data you receive, and is
+reported like one: the first block that a packet finds after the drops fails
+with `-EIO` (`lossy=0`) and the packet starts the next block, or, with
+`lossy=1`, the block is counted in `daqiri_blocks_with_gaps` but not
+zero-filled (the backend does not know how many samples a block would have
+held), so overrun gaps are flagged, not filled. A block that dequeues
+successfully therefore never hides an overrun before its data. Each overrun
+counts once in `daqiri_rx_overrun_events`, however many packets it dropped.
+Drops after the `-EIO` block, before any packet reached a block again, are
+part of the same overrun and fail no further block, so an application that
+queues one block at a time during an overrun still receives data.
+
 ### `framing=iiod`
 
 The data plane is the stock `iiod` binary protocol on a second TCP connection,
@@ -141,6 +153,7 @@ packets that arrived before the stream was started are dropped, not counted.
 | `daqiri_rx_lost_packets` | Packets found missing from the packet count / timestamp (a late packet that shows up afterwards is taken off again). |
 | `daqiri_rx_gap_events` | Number of gaps (one gap may span several packets). |
 | `daqiri_rx_dropped_no_block` | Packets dropped because no block was queued. |
+| `daqiri_rx_overrun_events` | Host overruns: times packets started being dropped for lack of a queued block after a packet had been delivered (one per episode, not per packet). Each one fails (`lossy=0`) or flags (`lossy=1`) the next block. |
 | `daqiri_rx_foreign_packets` | Packets of another Stream ID. |
 | `daqiri_rx_context_packets` | Context packets, dropped. |
 | `daqiri_rx_malformed` | Packets that failed validation. |

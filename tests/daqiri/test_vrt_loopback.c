@@ -858,14 +858,20 @@ out:
 }
 
 /*
- * Two blocks queued, never dequeued while 200 packets go by at 10 kpps.
- * The poller keeps draining: packets 0 and 1 fill the blocks, each later
- * packet finds no block and is counted (dropped_no_block, per packet).
+ * Two blocks queued, not dequeued while the first burst of 32 packets goes
+ * by at 10 kpps. The poller keeps draining: packets 0 and 1 fill the
+ * blocks, 2..31 find no block and are counted (dropped_no_block, per
+ * packet; one overrun event). In the 1 s pause after the burst both blocks
+ * are dequeued and queued again. The overrun is a gap of unknown size:
+ * packet 32 fails block 0 with -EIO and fills block 1, and 33..63 overrun
+ * again (a second event).
  */
 TEST_FUNCTION(slow_consumer)
 {
-	static const char *const args[] = { "--packets", "200", "--pps", "10000", NULL };
+	static const char *const args[] = { "--packets", "64", "--pps", "10000", "--burst-gap-ms",
+		"1000", NULL };
 	struct lb_case *c = &lc;
+	struct timespec t0;
 	long packets;
 	int ret;
 
@@ -874,28 +880,47 @@ TEST_FUNCTION(slow_consumer)
 	if (ret)
 		goto out;
 
-	/* No dequeue until the sender is done, every packet was seen and at
-	 * least 100 ms went by */
-	if (!case_finish(c))
-		goto out;
-	while (ms_since(&c->t_start) < 100.0)
+	/* No dequeue until the backend has seen the whole first burst */
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	while (arrived(c) < 32 && ms_since(&t0) < SETTLE_TIMEOUT_MS)
 		sleep_ms(1);
-
-	CHECK_EQ(c->o.sent, 200, "oracle: 200 sent");
-	TEST_ASSERT(ms_since(&c->t_start) >= 19.9, "sender took >= 19.9 ms (200 at 10 kpps)");
+	CHECK_EQ(arrived(c), 32, "first burst: 32 packets seen");
 
 	CHECK_EQ(iio_block_dequeue(c->blocks[0], false), 0, "block 0 done");
 	CHECK_EQ(classify(c->blocks[0]), 0, "block 0 is ramp packet 0");
 	CHECK_EQ(iio_block_dequeue(c->blocks[1], false), 0, "block 1 done");
 	CHECK_EQ(classify(c->blocks[1]), 1, "block 1 is ramp packet 1");
+	CHECK_EQ(ctr(c, "daqiri_rx_dropped_no_block"), 30, "dropped_no_block: packets 2..31");
+	CHECK_EQ(ctr(c, "daqiri_rx_overrun_events"), 1, "one overrun event, not one per packet");
+
+	CHECK_EQ(iio_block_enqueue(c->blocks[0], 0, false), 0, "block 0 queued again");
+	CHECK_EQ(iio_block_enqueue(c->blocks[1], 0, false), 0, "block 1 queued again");
+	/* Still in the pause, so packet 32 finds both blocks queued */
+	CHECK_EQ(arrived(c), 32, "blocks queued again before the second burst");
+
+	if (!case_finish(c))
+		goto out;
+
+	CHECK_EQ(c->o.sent, 64, "oracle: 64 sent");
+	CHECK_EQ(c->o.nb_dropped + c->o.nb_reordered + c->o.nb_duplicated, 0, "oracle: clean");
+	TEST_ASSERT(ms_since(&c->t_start) >= 1000.0, "sender paused 1 s between the bursts");
+
+	CHECK_EQ(iio_block_dequeue(c->blocks[0], false), -EIO, "block 0: -EIO, the overrun");
+	CHECK_EQ(iio_block_dequeue(c->blocks[1], false), 0, "block 1 done");
+	CHECK_EQ(classify(c->blocks[1]), 32, "block 1 is ramp packet 32, whole");
 
 	packets = ctr(c, "daqiri_rx_packets");
-	CHECK_EQ(packets, 200, "rx_packets: loopback lost nothing");
-	CHECK_EQ(ctr(c, "daqiri_rx_dropped_no_block"), packets - 2,
-			"dropped_no_block: every packet after the 2 blocks");
-	CHECK_EQ(ctr(c, "daqiri_rx_dropped_no_block"), 198, "dropped_no_block == 198");
-	CHECK_EQ(ctr(c, "daqiri_rx_lost_packets"), 0, "lost_packets");
-	CHECK_EQ(ctr(c, "daqiri_blocks_completed"), 2, "blocks_completed");
+	CHECK_EQ(packets, 64, "rx_packets: loopback lost nothing");
+	CHECK_EQ(ctr(c, "daqiri_rx_dropped_no_block"), packets - 3,
+			"dropped_no_block: every packet but 0, 1 and 32");
+	CHECK_EQ(ctr(c, "daqiri_rx_dropped_no_block"), 61, "dropped_no_block == 61");
+	CHECK_EQ(ctr(c, "daqiri_rx_overrun_events"), 2, "overrun events: 2..31 and 33..63");
+	CHECK_EQ(ctr(c, "daqiri_rx_lost_packets"), 0, "lost_packets: nothing lost on the wire");
+	CHECK_EQ(ctr(c, "daqiri_rx_gap_events"), 0, "gap_events: no sequence gap");
+	CHECK_EQ(ctr(c, "daqiri_blocks_completed"), 3, "blocks_completed: packets 0, 1, 32");
+	CHECK_EQ(ctr(c, "daqiri_blocks_failed"), 1, "blocks_failed: the overrun block");
+	CHECK_EQ(ctr(c, "daqiri_blocks_with_gaps"), 1, "blocks_with_gaps: the overrun block");
+	CHECK_EQ(ctr(c, "daqiri_last_error"), -EIO, "last_error: -EIO");
 out:
 	case_close(c);
 }
