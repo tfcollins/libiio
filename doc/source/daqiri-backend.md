@@ -72,7 +72,7 @@ Unknown keys, and values that do not parse, make context creation fail with
 | `sid` | 32-bit | `0` | Stream ID to accept, compared under `sid_mask`. Ignored when `sid_mask` is `0`. |
 | `sid_mask` | 32-bit | `0` | With `0`, the Stream ID of the first IF-Data packet is locked and packets of other Streams are counted as foreign. Otherwise a packet needs a Stream ID with `(stream_id & sid_mask) == (sid & sid_mask)`. |
 | `swap` | `0`, `1` | `1` | Convert the big-endian wire samples to the little-endian format the XML describes. `0` leaves them as they are. |
-| `gap_ts` | `0`, `1` | `1` | Use the VITA 49 fractional timestamp (a sample count that advances by the samples of each packet). `1`: the timestamp classifies packets (one that steps back a little is late, one that repeats the last timestamp and count is a duplicate; both are dropped and counted, not taken as losses) and sizes gaps, also past the 16-packet wrap of the 4-bit packet count. `0`: timestamps are not used at all, for a framer whose timestamp does not advance by exactly the samples per packet. Only the 4-bit packet count is used: a loss of 16 packets (or a multiple) is not seen, a repeated packet counts as a loss of 15 and a reordered one as a loss, nothing is counted late or duplicate, and with `lossy=1` those false losses are zero-filled. |
+| `gap_ts` | `0`, `1` | `1` | Use the VITA 49 fractional timestamp (a sample count that advances by the samples of each packet). `1`: the timestamp classifies packets (one that steps back a little is late, one that repeats the last timestamp and count is a duplicate; both are dropped and counted, not taken as losses) and sizes gaps, also past the 16-packet wrap of the 4-bit packet count. `0`: timestamps are not used at all, for a framer whose timestamp does not advance by exactly the samples per packet, or that sends none (with `gap_ts=1` such a framer makes every gap one of unknown size, which `lossy=1` flags but does not fill). Only the 4-bit packet count is used: a loss of 16 packets (or a multiple) is not seen, a repeated packet counts as a loss of 15 and a reordered one as a loss, nothing is counted late or duplicate, and with `lossy=1` those false losses are zero-filled. |
 | `data_port` | port | the management port | TCP port of the data connection for `framing=iiod`. |
 | `poll` | microseconds | `200` | Idle wait of the receive thread when the queue is empty, see below. |
 
@@ -135,9 +135,14 @@ packet's worth of zeros per lost packet, so the samples that follow stay at
 their place in the stream (the zeros may span several blocks). The zero-fill
 is capped at 1024 lost packets (`DQ_VRT_MAX_FILL_PACKETS`): a larger sized
 gap is a resynchronisation instead and fails a block with `-EIO` even with
-`lossy=1`. A gap of unknown size (timestamps that disagree with the packet
-count, or a discontinuity such as a sender restart) cannot be filled: with
-`lossy=1` its block is flagged in `daqiri_blocks_with_gaps`, not zero-filled.
+`lossy=1`. A gap of unknown size cannot be filled: with `lossy=1` its block is
+flagged in `daqiri_blocks_with_gaps`, not zero-filled, and the samples after
+it are not kept at their place in the stream. With `gap_ts=1` every gap is of
+unknown size when the packets carry no sample-count timestamp (the 4-bit count
+may hide a multiple of 16), and so are timestamps that disagree with the
+packet count and discontinuities such as a sender restart. For a framer
+without a sample-count timestamp, use `gap_ts=0` to have `lossy=1` zero-fill
+the gaps the 4-bit packet count sizes.
 
 If no block is queued when a packet arrives the packet is dropped and
 `daqiri_rx_dropped_no_block` counts it: keep enough blocks queued for your
@@ -148,8 +153,9 @@ reported like one: the first block that a packet finds after the drops fails
 with `-EIO` (`lossy=0`) and the packet starts the next block, or, with
 `lossy=1`, the block is counted in `daqiri_blocks_with_gaps` but not
 zero-filled (the backend does not know how many samples a block would have
-held), so overrun gaps are flagged, not filled. A block that dequeues
-successfully therefore never hides an overrun before its data. Each overrun
+held), so overrun gaps are flagged, not filled. With `lossy=0` a block that
+dequeues successfully therefore never hides an overrun before its data; with
+`lossy=1` only `daqiri_blocks_with_gaps` tells of it. Each overrun
 counts once in `daqiri_rx_overrun_events`, however many packets it dropped.
 Drops after the `-EIO` block, before any packet reached a block again, are
 part of the same overrun and fail no further block, so an application that
