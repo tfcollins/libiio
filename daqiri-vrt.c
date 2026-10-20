@@ -34,7 +34,9 @@
  *
  * Locking: v->lock covers the block states, the FIFO, the tracker, the
  * assembler and the counters. The poller holds it while it processes a
- * burst, never while it polls the engine or sleeps.
+ * burst, never while it polls the engine or sleeps. Enable and cancel also
+ * hold it to update stop (and enable to start the thread), so a cancel is
+ * never undone by a concurrent enable.
  */
 
 #ifndef _GNU_SOURCE
@@ -585,15 +587,22 @@ int dq_vrt_enable(struct dq_vrt_buffer *v, bool enable)
 	for (i = 0; i < DQ_VRT_DRAIN_MAX && !dq_rxq_poll(v->q, &b); i++)
 		dq_burst_free(&b);
 
-	atomic_store(&v->stop, false);
-	ret = -pthread_create(&v->thread, NULL, dq_vrt_poller, v);
-	if (ret) {
-		atomic_store(&v->stop, true);
-		return ret;
+	/* Under the lock: a cancel that came first is seen here, and one that
+	 * comes later sets stop after this, so it is never overwritten */
+	pthread_mutex_lock(&v->lock);
+	if (v->cancelled) {
+		ret = -ECANCELED;
+	} else {
+		atomic_store(&v->stop, false);
+		ret = -pthread_create(&v->thread, NULL, dq_vrt_poller, v);
+		if (ret)
+			atomic_store(&v->stop, true);
+		else
+			v->running = true;
 	}
+	pthread_mutex_unlock(&v->lock);
 
-	v->running = true;
-	return 0;
+	return ret;
 }
 
 void dq_vrt_cancel(struct dq_vrt_buffer *v)
@@ -616,11 +625,12 @@ void dq_vrt_cancel(struct dq_vrt_buffer *v)
 	dq_asm_reset(&v->as);
 	v->delivered = false;
 	v->overrun_pending = false;
+	/* Under the lock, so that a concurrent enable cannot clear it */
+	atomic_store(&v->stop, true);
 
 	pthread_cond_broadcast(&v->cond);
 	pthread_mutex_unlock(&v->lock);
 
-	atomic_store(&v->stop, true);
 	dq_vrt_wake(v);
 }
 
