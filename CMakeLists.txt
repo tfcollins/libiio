@@ -864,7 +864,8 @@ iio_option(
 # libc: shared by the daqiri module and by its unit tests, which need neither
 # DAQIRI nor libiio.
 if (WITH_DAQIRI_BACKEND OR (WITH_TESTS AND NOT WIN32))
-    add_library(iio_daqiri_framing OBJECT daqiri-vrt-stream.c daqiri-asm.c)
+    add_library(iio_daqiri_framing OBJECT daqiri-vrt-stream.c daqiri-asm.c
+                                          daqiri-l2.c)
     target_include_directories(iio_daqiri_framing
                                PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(iio_daqiri_framing PRIVATE iio_common_config)

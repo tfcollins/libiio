@@ -499,6 +499,126 @@
       "payload_bytes": 0,
       "valid": false,
       "payload_pattern": "zero"
+    },
+    {
+      "name": "l2-plain.bin",
+      "kind": "l2",
+      "status": "DQ_L2_OK",
+      "payload_off": 42,
+      "payload_len": 92,
+      "udp_src": 49152,
+      "udp_dst": 25101,
+      "vlan_id": 0,
+      "ip_src": 167772161,
+      "ip_dst": 167772162
+    },
+    {
+      "name": "l2-vlan.bin",
+      "kind": "l2",
+      "status": "DQ_L2_OK",
+      "payload_off": 46,
+      "payload_len": 92,
+      "udp_src": 49152,
+      "udp_dst": 25101,
+      "vlan_id": 100,
+      "ip_src": 167772161,
+      "ip_dst": 167772162
+    },
+    {
+      "name": "l2-qinq.bin",
+      "kind": "l2",
+      "status": "DQ_L2_QINQ",
+      "payload_off": 0,
+      "payload_len": 0,
+      "udp_src": 0,
+      "udp_dst": 0,
+      "vlan_id": 0,
+      "ip_src": 0,
+      "ip_dst": 0
+    },
+    {
+      "name": "l2-ipv6.bin",
+      "kind": "l2",
+      "status": "DQ_L2_NOT_IPV4",
+      "payload_off": 0,
+      "payload_len": 0,
+      "udp_src": 0,
+      "udp_dst": 0,
+      "vlan_id": 0,
+      "ip_src": 0,
+      "ip_dst": 0
+    },
+    {
+      "name": "l2-ihl6.bin",
+      "kind": "l2",
+      "status": "DQ_L2_BAD_IHL",
+      "payload_off": 0,
+      "payload_len": 0,
+      "udp_src": 0,
+      "udp_dst": 0,
+      "vlan_id": 0,
+      "ip_src": 0,
+      "ip_dst": 0
+    },
+    {
+      "name": "l2-tcp.bin",
+      "kind": "l2",
+      "status": "DQ_L2_NOT_UDP",
+      "payload_off": 0,
+      "payload_len": 0,
+      "udp_src": 0,
+      "udp_dst": 0,
+      "vlan_id": 0,
+      "ip_src": 0,
+      "ip_dst": 0
+    },
+    {
+      "name": "l2-frag.bin",
+      "kind": "l2",
+      "status": "DQ_L2_FRAGMENT",
+      "payload_off": 0,
+      "payload_len": 0,
+      "udp_src": 0,
+      "udp_dst": 0,
+      "vlan_id": 0,
+      "ip_src": 0,
+      "ip_dst": 0
+    },
+    {
+      "name": "l2-trunc-ip.bin",
+      "kind": "l2",
+      "status": "DQ_L2_BAD_IP_LEN",
+      "payload_off": 0,
+      "payload_len": 0,
+      "udp_src": 0,
+      "udp_dst": 0,
+      "vlan_id": 0,
+      "ip_src": 0,
+      "ip_dst": 0
+    },
+    {
+      "name": "l2-trunc-udp.bin",
+      "kind": "l2",
+      "status": "DQ_L2_BAD_UDP_LEN",
+      "payload_off": 0,
+      "payload_len": 0,
+      "udp_src": 0,
+      "udp_dst": 0,
+      "vlan_id": 0,
+      "ip_src": 0,
+      "ip_dst": 0
+    },
+    {
+      "name": "l2-short.bin",
+      "kind": "l2",
+      "status": "DQ_L2_TRUNCATED",
+      "payload_off": 0,
+      "payload_len": 0,
+      "udp_src": 0,
+      "udp_dst": 0,
+      "vlan_id": 0,
+      "ip_src": 0,
+      "ip_dst": 0
     }
   ]
 }

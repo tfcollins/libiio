@@ -25,7 +25,8 @@ No DAQIRI, CUDA, network or board: they run in the plain `tests.yml` job.
 `test_vrt_prologue` (header parsing against the golden vectors),
 `test_vrt_gap` (packet count / timestamp loss detection) and
 `test_vrt_assembler` (block assembly: boundaries, straddling packets, short
-tails, zero-fill).
+tails, zero-fill) and `test_l2_parse` (Ethernet/802.1Q/IPv4/UDP parser for raw
+queues: the `l2-*.bin` golden vectors and every prefix of a valid frame).
 
 ## Loopback tests (label `daqiri-loopback`)
 

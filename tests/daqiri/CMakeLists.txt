@@ -221,4 +221,19 @@ if (WITH_TESTS AND NOT WIN32)
                    C_EXTENSIONS OFF)
     add_test(NAME test_vrt_assembler COMMAND test_vrt_assembler)
     set_tests_properties(test_vrt_assembler PROPERTIES LABELS daqiri)
+
+    add_executable(test_l2_parse test_l2_parse.c)
+    target_link_libraries(test_l2_parse PRIVATE iio_daqiri_framing)
+    target_include_directories(test_l2_parse
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+    target_compile_definitions(
+        test_l2_parse
+        PRIVATE TESTS_VRT_DIR="${CMAKE_SOURCE_DIR}/tests/resources/vrt")
+    set_target_properties(
+        test_l2_parse
+        PROPERTIES C_STANDARD 99
+                   C_STANDARD_REQUIRED ON
+                   C_EXTENSIONS OFF)
+    add_test(NAME test_l2_parse COMMAND test_l2_parse)
+    set_tests_properties(test_l2_parse PROPERTIES LABELS daqiri)
 endif ()
