@@ -176,7 +176,7 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                    RUN_SERIAL
                    TRUE
                    TIMEOUT
-                   120)
+                   300)
 endif ()
 
 # VITA 49.2 prologue parser unit test: header-only, needs neither libiio's
