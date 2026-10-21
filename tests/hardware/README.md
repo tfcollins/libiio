@@ -37,6 +37,13 @@ Run the hardware test:
 ./tests/hardware/test_ad9364
 ```
 
+## Managed labgrid baseline
+
+See [MANAGED.md](MANAGED.md) for the opt-in tron ADRV9009-ZU11EG managed
+reservation/boot gate, offline harness tests, pinned dependencies, and exact
+JUnit/cleanup requirements. This is a network baseline plus legacy DAQIRI
+capability rejection test, **not accelerated streaming qualification**.
+
 ## Adding Hardware Tests
 
 When adding new hardware-specific tests:

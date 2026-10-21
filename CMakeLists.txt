@@ -838,6 +838,29 @@ else ()
     set(HAVE_DNS_SD OFF)
 endif ()
 
+# The experimental packet backend is built in only when explicitly requested.
+# Default builds remain C-only and do not discover CUDA or DAQIRI.
+iio_option(WITH_DAQIRI_BACKEND "Enable experimental DAQIRI DQI1 CPU backend" OFF "POSIX")
+if (WITH_DAQIRI_BACKEND)
+    if (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WITH_LIBTINYIIOD)
+        message(FATAL_ERROR "DAQIRI requires Linux and real thread support")
+    endif ()
+    enable_language(CXX)
+    find_package(daqiri CONFIG REQUIRED)
+    find_package(Threads REQUIRED)
+    set(DAQIRI_PROFILE_DIR "/etc/libiio/daqiri" CACHE PATH
+        "Administrator-owned DAQIRI profile directory")
+    if (NOT IS_ABSOLUTE "${DAQIRI_PROFILE_DIR}")
+        message(FATAL_ERROR "DAQIRI_PROFILE_DIR must be absolute")
+    endif ()
+    target_sources(iio PRIVATE daqiri.c daqiri-stream.cpp daqiri-transport.cpp)
+    target_compile_features(iio PRIVATE cxx_std_17)
+    target_compile_definitions(iio PRIVATE DAQIRI_PROFILE_DIR="${DAQIRI_PROFILE_DIR}")
+    target_link_libraries(iio PRIVATE daqiri::daqiri Threads::Threads)
+    set(IIOD_CLIENT 1)
+    set(NEED_LIBXML2 1)
+endif ()
+
 iio_option(WITH_XML_BACKEND "Enable the XML backend" ON "POSIX")
 if (WITH_XML_BACKEND OR WITH_EMU_BACKEND)
     # Since libxml2-2.9.2, libxml2 provides its own LibXml2-config.cmake, with all
@@ -1073,6 +1096,7 @@ configure_file(iio-config.h.cmakein ${CMAKE_CURRENT_BINARY_DIR}/iio-config.h
 
 toggle_iio_feature("${LIBIIO_COMPAT}" compat)
 toggle_iio_feature("${WITH_XML_BACKEND}" xml)
+toggle_iio_feature("${WITH_DAQIRI_BACKEND}" daqiri)
 toggle_iio_feature("${WITH_EMU_BACKEND}" emu)
 toggle_iio_feature("${WITH_ZSTD}" zstd)
 toggle_iio_feature("${WITH_NETWORK_BACKEND}" network)

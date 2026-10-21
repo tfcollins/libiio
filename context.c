@@ -685,7 +685,10 @@ int iio_context_ping(struct iio_context *ctx)
 	return ctx->ops->ping(ctx);
 }
 
+extern const struct iio_backend iio_daqiri_backend;
+
 const struct iio_backend *const iio_backends[] = {
+	IIO_IF_ENABLED(WITH_DAQIRI_BACKEND, &iio_daqiri_backend),
 	IIO_IF_ENABLED(WITH_LOCAL_BACKEND, &iio_local_backend),
 	IIO_IF_ENABLED(WITH_NETWORK_BACKEND && !WITH_NETWORK_BACKEND_DYNAMIC, &iio_ip_backend),
 	IIO_IF_ENABLED(WITH_SERIAL_BACKEND && !WITH_SERIAL_BACKEND_DYNAMIC, &iio_serial_backend),
