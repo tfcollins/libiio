@@ -239,6 +239,7 @@ global:
 	iiod_client_reg_write;
 	iiod_client_set_timeout;
 	iiod_client_set_trigger;
+	iiod_client_udp_stream_setup;
 	iiod_client_uses_binary_interface;
 	iiod_client_writebuf;
 

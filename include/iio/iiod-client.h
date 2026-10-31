@@ -76,6 +76,15 @@ __api void iiod_client_close_buffer(struct iiod_client_buffer_pdata *pdata);
 __api int iiod_client_enable_buffer(struct iiod_client_buffer_pdata *pdata, size_t nb_samples,
 		bool enable, bool cyclic);
 
+/* Ask the server to stream the samples of an open buffer as UDP datagrams
+ * once it is enabled. Send it on the buffer's connection, before every enable.
+ * Returns 0 and fills <resp>, or a negative error code: -ENOSYS when the
+ * connection does not use the binary protocol, -EPROTO when the answer is not
+ * a response tail, otherwise the server's answer (-ENOTSUP when it cannot
+ * stream this buffer). */
+__api int iiod_client_udp_stream_setup(struct iiod_client_buffer_pdata *pdata,
+		const struct iiod_udp_stream_req *req, struct iiod_udp_stream_resp *resp);
+
 __api struct iio_block_pdata *iiod_client_create_block(
 		struct iiod_client_buffer_pdata *pdata, size_t size, void **data);
 __api void iiod_client_free_block(struct iio_block_pdata *block);
