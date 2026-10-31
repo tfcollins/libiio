@@ -179,6 +179,37 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                    300)
 endif ()
 
+# Emulator tests of the iiod side of UDP sample mode: the iiod-client API over a
+# plain TCP socket against iiod-emu on 127.0.0.1:30431. They need neither the
+# daqiri module nor DAQIRI.
+if (WITH_IIOD_EMU
+    AND WITH_EMU_BACKEND
+    AND IIOD_CLIENT
+    AND NOT WIN32)
+    # iiod-emu registers no UDP stream provider: the setup command must be
+    # answered with -ENOTSUP, and the connection must stay usable.
+    add_executable(test_udp_setup_emu test_udp_setup_emu.c)
+    target_link_libraries(test_udp_setup_emu PRIVATE iio)
+    target_include_directories(test_udp_setup_emu
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+    target_compile_definitions(test_udp_setup_emu PRIVATE TESTS_DEBUG)
+    add_dependencies(test_udp_setup_emu iiod-emu)
+
+    add_test(NAME daqiri_udp_setup_emu
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh
+                     ${XMLS}/fmcomms2.xml $<TARGET_FILE:test_udp_setup_emu>)
+    set_tests_properties(
+        daqiri_udp_setup_emu
+        PROPERTIES LABELS
+                   daqiri-emu
+                   ENVIRONMENT
+                   "IIOD_EMU=$<TARGET_FILE:iiod-emu>"
+                   RESOURCE_LOCK
+                   iiod-emu-30431
+                   TIMEOUT
+                   60)
+endif ()
+
 # VITA 49.2 prologue parser unit test: header-only, needs neither libiio's
 # daqiri module nor the DAQIRI SDK, so it is built whenever tests are.
 if (WITH_TESTS AND NOT WIN32)
