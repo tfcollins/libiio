@@ -30,7 +30,9 @@
  *
  * With --mixed (served float_scan_elements.xml), only the channel layout is
  * checked: UDP sample mode takes the device's own layout, so 16- and 32-bit
- * channels open in one buffer.
+ * channels open in one buffer. With --wrong-source (served by iiod-emu --udp
+ * sending from another address than the YAML's remote_addr), only the source
+ * check: the buffer does not open, with data=udp or data=auto.
  */
 
 #include <arpa/inet.h>
@@ -617,6 +619,114 @@ static int sender_open(void)
 	return fd;
 }
 
+/* voltage0 alone: a 2-byte sample set, which the mock refuses (-ENOTSUP) */
+static int rx_init_one(struct rx *rx, struct iio_context *ctx)
+{
+	struct iio_channel *chn;
+	int ret;
+
+	ret = rx_init(rx, ctx, DEV_NAME, false);
+	if (ret)
+		return ret;
+
+	chn = iio_device_find_channel(iio_buffer_get_device(rx->buf), iq_chans[1], false);
+	if (!chn)
+		return -ENOENT;
+	iio_channel_disable(chn, rx->mask);
+
+	return 0;
+}
+
+/* A refused probe with data=auto: the buffer streams over TCP on its own
+ * connection, and the queue is free for the next UDP buffer */
+TEST_FUNCTION(refused_probe_auto)
+{
+	struct rx rx;
+	int ret;
+
+	ret = rx_init_one(&rx, ctx_opts(yaml, ",data=auto"));
+	CHECK_EQ(ret, 0, "data=auto context, voltage0 alone");
+	if (ret)
+		goto out;
+
+	ret = rx_open_size(&rx, 1, 1024);
+	CHECK_EQ(ret, 0, "refused setup: the buffer opens all the same");
+	if (ret)
+		goto out;
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_data_path"), "tcp", "and streams over TCP");
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_engine_kind"), "none", "without the engine");
+
+	CHECK_EQ(enqueue_all(&rx), 0, "TCP block enqueued");
+	CHECK_EQ(iio_buffer_stream_start(rx.stream), 0, "TCP enable");
+	CHECK_EQ(iio_block_dequeue(rx.blocks[0], false), 0, "TCP block received");
+	CHECK_EQ(iio_buffer_stream_stop(rx.stream), 0, "TCP disable");
+	rx_close(&rx);
+
+	/* voltage0 and voltage1: accepted, and the fallback gave the queue
+	 * back */
+	iio_channel_enable(
+			iio_device_find_channel(iio_buffer_get_device(rx.buf), iq_chans[1], false),
+			rx.mask);
+	ret = rx_open(&rx, 0);
+	CHECK_EQ(ret, 0, "the next buffer gets the queue");
+	if (!ret)
+		TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_data_path"), "udp", "over UDP");
+out:
+	rx_destroy(&rx);
+}
+
+/* A refused probe with data=udp: -ENOTSUP, and the context goes on */
+TEST_FUNCTION(refused_probe_udp)
+{
+	const struct iio_device *phy;
+	const struct iio_channel *chn;
+	const struct iio_attr *attr;
+	char val[64] = "";
+	struct rx rx;
+	int ret;
+
+	ret = rx_init_one(&rx, ctx_for(yaml));
+	CHECK_EQ(ret, 0, "data=udp context, voltage0 alone");
+	if (ret)
+		goto out;
+
+	CHECK_EQ(rx_open(&rx, 0), -ENOTSUP, "refused setup: -ENOTSUP");
+
+	phy = iio_context_find_device(rx.ctx, "ad9361-phy");
+	chn = phy ? iio_device_find_channel(phy, "voltage0", false) : NULL;
+	attr = chn ? iio_channel_find_attr(chn, "sampling_frequency") : NULL;
+	TEST_ASSERT(attr && iio_attr_read_raw(attr, val, sizeof(val)) > 0,
+			"the context still reads attributes");
+
+	iio_channel_enable(
+			iio_device_find_channel(iio_buffer_get_device(rx.buf), iq_chans[1], false),
+			rx.mask);
+	CHECK_EQ(rx_open(&rx, 0), 0, "and opens the next buffer on the queue");
+out:
+	rx_destroy(&rx);
+}
+
+/* --wrong-source, against iiod-emu --udp sending from another port than the
+ * YAML's remote_addr: the socket engine would never receive the stream */
+TEST_FUNCTION(wrong_source)
+{
+	struct rx rx;
+	int ret;
+
+	ret = rx_init(&rx, ctx_for(yaml), DEV_NAME, false);
+	CHECK_EQ(ret, 0, "data=udp context and mask");
+	if (!ret)
+		CHECK_EQ(rx_open(&rx, 0), -EADDRNOTAVAIL, "data=udp: -EADDRNOTAVAIL");
+	rx_destroy(&rx);
+
+	/* Not a refusal: no fallback either */
+	ret = rx_init(&rx, ctx_opts(yaml, ",data=auto"), DEV_NAME, false);
+	CHECK_EQ(ret, 0, "data=auto context and mask");
+	if (!ret)
+		CHECK_EQ(rx_open(&rx, 0), -EADDRNOTAVAIL, "data=auto: -EADDRNOTAVAIL, no TCP");
+	rx_destroy(&rx);
+}
+
 /* The mock picks payloads of max_payload rounded down to 16 bytes: 9200 is
  * no whole number of 6-byte samples */
 TEST_FUNCTION(payload_not_whole_samples)
@@ -780,6 +890,10 @@ int main(int argc, char **argv)
 		RUN_TEST(mixed_lengths);
 		goto out;
 	}
+	if (argc > 1 && !strcmp(argv[1], "--wrong-source")) {
+		RUN_TEST(wrong_source);
+		goto out;
+	}
 
 	RUN_TEST(exit_with_open_buffer);
 	RUN_TEST(busy_when_empty);
@@ -790,6 +904,8 @@ int main(int argc, char **argv)
 	RUN_TEST(output_rejected);
 	RUN_TEST(counter_attrs);
 	RUN_TEST(payload_not_whole_samples);
+	RUN_TEST(refused_probe_auto);
+	RUN_TEST(refused_probe_udp);
 	RUN_TEST(data_smoke);
 out:
 	printf("test_daqiri_lifecycle: %d/%d passed, %d failed\n", test_passed, test_count,

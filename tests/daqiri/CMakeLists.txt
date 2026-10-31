@@ -119,8 +119,18 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                 ${XMLS}/float_scan_elements.xml
                 $<TARGET_FILE:test_daqiri_lifecycle> --mixed)
 
+        # The reference server sending from another address than the YAML's
+        # remote_addr, where the socket engine receives from
+        add_test(
+            NAME daqiri_lifecycle_wrong_source
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args --udp
+                --udp-from 127.0.0.1:25109 -- ${XMLS}/fmcomms2.xml
+                $<TARGET_FILE:test_daqiri_lifecycle> --wrong-source)
+
         set_tests_properties(
             daqiri_lifecycle daqiri_lifecycle_mixed
+            daqiri_lifecycle_wrong_source
             PROPERTIES
                 LABELS
                 daqiri-loopback
