@@ -26,21 +26,6 @@ struct iiod_client_ops {
 	void (*cancel)(struct iiod_client_pdata *desc);
 };
 
-/* Request and response of the UDP sample stream setup. Fields are in host
- * byte order; on the wire they travel in network byte order. */
-struct iiod_udp_stream_req {
-	uint32_t dst_ip;      /* IPv4 address the datagrams are sent to */
-	uint16_t dst_port;    /* UDP port they are sent to */
-	uint16_t max_payload; /* Largest payload, in bytes, the host accepts */
-};
-
-struct iiod_udp_stream_resp {
-	uint32_t stream_id;	/* Stream ID carried by every datagram */
-	uint16_t payload_bytes; /* Payload size of every datagram */
-	uint16_t src_port;	/* UDP port the datagrams come from */
-	uint32_t src_ip;	/* IPv4 address they come from */
-};
-
 __api void iiod_client_mutex_lock(struct iiod_client *client);
 __api void iiod_client_mutex_unlock(struct iiod_client *client);
 
@@ -75,6 +60,11 @@ __api struct iiod_client_buffer_pdata *iiod_client_open_buffer(struct iiod_clien
 __api void iiod_client_close_buffer(struct iiod_client_buffer_pdata *pdata);
 __api int iiod_client_enable_buffer(struct iiod_client_buffer_pdata *pdata, size_t nb_samples,
 		bool enable, bool cyclic);
+
+/* Defined in iiod-udp-stream.h, which in-tree callers include; the shared
+ * iiod code needs them without this header. */
+struct iiod_udp_stream_req;
+struct iiod_udp_stream_resp;
 
 /* Ask the server to stream the samples of an open buffer as UDP datagrams
  * once it is enabled. Send it on the buffer's connection, before every enable.

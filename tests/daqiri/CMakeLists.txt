@@ -283,13 +283,10 @@ if (WITH_TESTS AND NOT WIN32)
     add_test(NAME test_vrt_hds_split COMMAND test_vrt_hds_split)
     set_tests_properties(test_vrt_hds_split PROPERTIES LABELS daqiri)
 
-    # UDP sample stream codec (iiod-udp-stream.h): header-only, links nothing.
-    # It takes the request and response structs from <iio/iiod-client.h>,
-    # hence include/.
+    # UDP sample stream codec (iiod-udp-stream.h): header-only, libc only.
     add_executable(test_udp_stream_codec test_udp_stream_codec.c)
-    target_include_directories(
-        test_udp_stream_codec PRIVATE ${CMAKE_SOURCE_DIR}/tests/api
-                                      ${CMAKE_SOURCE_DIR}/include)
+    target_include_directories(test_udp_stream_codec
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
     target_compile_definitions(test_udp_stream_codec PRIVATE TESTS_DEBUG)
     set_target_properties(
         test_udp_stream_codec

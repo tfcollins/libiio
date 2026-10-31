@@ -23,6 +23,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "../../iiod-udp-stream.h"
 #include "test_framework.h"
 
 #define EMU_PORT 30431 /* with_emu.sh */

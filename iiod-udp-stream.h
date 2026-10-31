@@ -4,18 +4,17 @@
  *
  * Copyright (C) 2026 Analog Devices, Inc.
  *
- * UDP sample stream: wire format of the IIOD_OP_UDP_STREAM_SETUP tails and of
- * the datagram header. Everything on the wire is in network byte order (big
- * endian), although the rest of the binary protocol is host-native. The codec
- * needs nothing but libc and two structs of <iio/iiod-client.h>, so the client,
- * the server and the host's receive path share it.
+ * UDP sample stream: the IIOD_OP_UDP_STREAM_SETUP request and response, and
+ * the wire format of their tails and of the datagram header. Everything on the
+ * wire is in network byte order (big endian), although the rest of the binary
+ * protocol is host-native. Libc only, so that the client, the server (iiod,
+ * tinyiiod, Zephyr) and the host's receive path can all share it.
  */
 
 #ifndef __IIOD_UDP_STREAM_H__
 #define __IIOD_UDP_STREAM_H__
 
 #include <errno.h>
-#include <iio/iiod-client.h> /* struct iiod_udp_stream_req, iiod_udp_stream_resp */
 #include <stddef.h>
 #include <stdint.h>
 
@@ -24,6 +23,21 @@
  * negative error code and no tail. */
 #define IIOD_UDP_STREAM_REQ_LEN 8
 #define IIOD_UDP_STREAM_RESP_LEN 12
+
+/* The request and response of iiod_client_udp_stream_setup(), which
+ * <iio/iiod-client.h> only declares. Fields are in host byte order. */
+struct iiod_udp_stream_req {
+	uint32_t dst_ip;      /* IPv4 address the datagrams are sent to */
+	uint16_t dst_port;    /* UDP port they are sent to */
+	uint16_t max_payload; /* Largest payload, in bytes, the host accepts */
+};
+
+struct iiod_udp_stream_resp {
+	uint32_t stream_id;	/* Stream ID carried by every datagram */
+	uint16_t payload_bytes; /* Payload size of every datagram */
+	uint16_t src_port;	/* UDP port the datagrams come from */
+	uint32_t src_ip;	/* IPv4 address they come from */
+};
 
 /* Each datagram: this header, then payload_length bytes of samples */
 #define IIOD_UDP_STREAM_HDR_LEN 16
