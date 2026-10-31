@@ -5,7 +5,7 @@
 # iiod-emu (with_emu.sh) and TESTS_API_URI pointing at it.
 # Usage: run_loopback.sh <build-dir> <test_daqiri_open> [<xml-dir>]
 # Env:   IIOD_EMU             see with_emu.sh
-#        DAQIRI_LOOPBACK_URI  URI under test (default daqiri:127.0.0.1,framing=iiod);
+#        DAQIRI_LOOPBACK_URI  URI under test (default daqiri:127.0.0.1,data=tcp);
 #                             set it to ip:127.0.0.1 for the control run
 #
 # The api tests skip quietly when a buffer does not open, so before them each
@@ -22,7 +22,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 build=$1
 open_test=$2
 xmls=${3:-$here/../resources/xmls}
-uri=${DAQIRI_LOOPBACK_URI:-daqiri:127.0.0.1,framing=iiod}
+uri=${DAQIRI_LOOPBACK_URI:-daqiri:127.0.0.1,data=tcp}
 
 fail() {
 	echo "$0: $*" >&2

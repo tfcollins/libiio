@@ -24,7 +24,7 @@
 
 #include "test_framework.h"
 
-#define DEFAULT_URI "daqiri:127.0.0.1,framing=iiod"
+#define DEFAULT_URI "daqiri:127.0.0.1,data=tcp"
 #define BLOCK_SAMPLES 256
 
 static bool is_input_scan_element(const struct iio_channel *chn)

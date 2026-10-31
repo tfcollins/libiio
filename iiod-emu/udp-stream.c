@@ -5,8 +5,8 @@
  * UDP sample mode: a provider for IIOD_OP_UDP_STREAM_SETUP (iiod/udp-stream.h)
  * that sends the samples of an enabled input buffer as UDP datagrams, paced or
  * not, with drops, reordering and duplicates injected on demand, and writes
- * what it did as a JSON oracle. The injection rules are those of the old
- * tests/daqiri/vrt_sender.c.
+ * what it did as a JSON oracle. The injection rules are those of the VITA 49.2
+ * test sender that the daqiri: backend's tests used before UDP sample mode.
  *
  * Copyright (C) 2026 Analog Devices, Inc.
  */

@@ -895,12 +895,12 @@ if (WITH_DAQIRI_BACKEND)
     find_package(Threads REQUIRED)
 
     add_library(
-        iio-daqiri SHARED daqiri.c daqiri-mgmt.c daqiri-vrt.c daqiri-engine.cpp
+        iio-daqiri SHARED daqiri.c daqiri-mgmt.c daqiri-udp.c daqiri-engine.cpp
                           $<TARGET_OBJECTS:iio_daqiri_framing>)
     target_compile_features(iio-daqiri PRIVATE cxx_std_17)
     target_link_libraries(iio-daqiri PRIVATE iio daqiri::daqiri CUDA::cudart
                                              Threads::Threads ${CMAKE_DL_LIBS})
-    # C11 for <stdatomic.h> in daqiri-vrt.c
+    # C11 for <stdatomic.h> in daqiri-udp.c
     set_target_properties(
         iio-daqiri
         PROPERTIES PREFIX lib

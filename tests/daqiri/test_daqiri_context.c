@@ -17,7 +17,7 @@
 
 #include "test_framework.h"
 
-#define DEFAULT_DAQIRI_URI "daqiri:127.0.0.1,framing=iiod"
+#define DEFAULT_DAQIRI_URI "daqiri:127.0.0.1,data=tcp"
 #define DEFAULT_IP_URI "ip:127.0.0.1"
 
 static const char *daqiri_uri;
@@ -77,14 +77,35 @@ TEST_FUNCTION(bad_key)
 	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,bogus=1"), -EINVAL, "unknown key rejected");
 }
 
-TEST_FUNCTION(bad_framing)
+TEST_FUNCTION(bad_data)
 {
-	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,framing=xyz"), -EINVAL, "bad framing rejected");
+	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,data=xyz"), -EINVAL, "bad data path rejected");
+	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,data=tcp,udp_dst=10.0.0"), -EINVAL,
+			"udp_dst not a dotted quad rejected");
+	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,data=tcp,udp_dst=0.0.0.0"), -EINVAL,
+			"udp_dst 0.0.0.0 rejected");
+}
+
+/* The VITA 49.2 framing and its options are gone */
+TEST_FUNCTION(removed_keys)
+{
+	static const char *const removed[] = {
+		"daqiri:127.0.0.1,framing=iiod",
+		"daqiri:127.0.0.1,framing=vrt",
+		"daqiri:127.0.0.1,data=tcp,sid=1",
+		"daqiri:127.0.0.1,data=tcp,sid_mask=1",
+		"daqiri:127.0.0.1,data=tcp,swap=0",
+		"daqiri:127.0.0.1,data=tcp,gap_ts=0",
+	};
+	unsigned int i;
+
+	for (i = 0; i < sizeof(removed) / sizeof(removed[0]); i++)
+		TEST_ASSERT_EQ(create_err(removed[i]), -EINVAL, removed[i]);
 }
 
 TEST_FUNCTION(bad_yaml)
 {
-	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,framing=iiod,yaml=/nonexistent/daqiri.yaml"),
+	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,data=tcp,yaml=/nonexistent/daqiri.yaml"),
 			-EINVAL, "unreadable yaml rejected");
 }
 
@@ -126,7 +147,8 @@ TEST_FUNCTION(ctx_attrs)
 		return;
 	}
 
-	TEST_ASSERT_STR_EQ(ctx_attr(ctx_d, "daqiri,framing"), "iiod", "framing attr");
+	TEST_ASSERT_STR_EQ(ctx_attr(ctx_d, "daqiri,data"), "tcp", "data attr");
+	TEST_ASSERT_STR_EQ(ctx_attr(ctx_d, "daqiri,framing"), "(missing)", "no framing attr");
 	TEST_ASSERT_STR_EQ(ctx_attr(ctx_d, "daqiri,mem"), "host", "mem attr");
 	TEST_ASSERT_STR_EQ(ctx_attr(ctx_d, "uri"), daqiri_uri, "uri attr");
 	TEST_ASSERT_STR_EQ(ctx_attr(ctx_d, "ip,ip-addr"), "127.0.0.1", "ip-addr attr");
@@ -182,6 +204,27 @@ TEST_FUNCTION(ping_timeout)
 	TEST_ASSERT_EQ(iio_context_ping(ctx_d), 0, "ping");
 }
 
+/* Every input buffer says which data path it takes; with data=tcp, TCP */
+TEST_FUNCTION(data_path_attr)
+{
+	const struct iio_device *dev = ctx_d ? iio_context_find_device(ctx_d, "cf-ad9361-lpc")
+					     : NULL;
+	const struct iio_buffer *buf = dev ? iio_device_get_buffer(dev, 0) : NULL;
+	const struct iio_attr *attr = buf ? iio_buffer_find_attr(buf, "daqiri_data_path") : NULL;
+	char val[16] = "";
+	ssize_t ret;
+
+	TEST_ASSERT_PTR_NOT_NULL(attr, "daqiri_data_path on cf-ad9361-lpc buffer 0");
+	if (!attr)
+		return;
+
+	ret = iio_attr_read_raw(attr, val, sizeof(val));
+	TEST_ASSERT(ret > 0, "daqiri_data_path readable");
+	TEST_ASSERT_STR_EQ(val, "tcp", "daqiri_data_path is tcp");
+	TEST_ASSERT_PTR_NULL(iio_buffer_find_attr(buf, "daqiri_rx_context_packets"),
+			"no daqiri_rx_context_packets");
+}
+
 /* Same schema as CI/daqiri/probe-socket.cpp; parsed only, never initialised. */
 static const char socket_yaml[] = "daqiri:\n"
 				  "  cfg:\n"
@@ -234,7 +277,7 @@ TEST_FUNCTION(yaml_engine)
 	fputs(socket_yaml, f);
 	fclose(f);
 
-	snprintf(uri, sizeof(uri), "daqiri:127.0.0.1,framing=iiod,yaml=%s", path);
+	snprintf(uri, sizeof(uri), "daqiri:127.0.0.1,data=tcp,yaml=%s", path);
 	ctx = open_ctx(uri);
 	TEST_ASSERT_PTR_NOT_NULL(ctx, "context with valid yaml");
 	if (ctx) {
@@ -253,12 +296,14 @@ int main(void)
 
 	RUN_TEST(has_backend);
 	RUN_TEST(bad_key);
-	RUN_TEST(bad_framing);
+	RUN_TEST(bad_data);
+	RUN_TEST(removed_keys);
 	RUN_TEST(bad_yaml);
 	RUN_TEST(topology);
 	RUN_TEST(ctx_attrs);
 	RUN_TEST(attr_roundtrip);
 	RUN_TEST(ping_timeout);
+	RUN_TEST(data_path_attr);
 	RUN_TEST(yaml_engine);
 
 	if (ctx_d)

@@ -72,7 +72,7 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
         COMMAND
             ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh ${EQ_FIXTURE}/fmcomms2.xml
             $<TARGET_FILE:test_block_equivalence>)
-    # IIO_DAQIRI_YAML is cleared: its framing=vrt case expects no YAML.
+    # IIO_DAQIRI_YAML is cleared: its data=auto case expects no YAML.
     set_tests_properties(
         daqiri_block_equivalence
         PROPERTIES LABELS daqiri-loopback ENVIRONMENT
@@ -88,77 +88,51 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
     target_compile_definitions(test_daqiri_open PRIVATE TESTS_DEBUG)
     add_dependencies(test_daqiri_open iio-daqiri iiod-emu)
 
-    # framing=vrt buffer lifecycle over the DAQIRI socket engine. The engine
-    # binds UDP 127.0.0.1:25101 (see the YAML), hence the second lock.
-    add_executable(test_daqiri_lifecycle test_daqiri_lifecycle.c)
-    target_link_libraries(test_daqiri_lifecycle PRIVATE iio)
-    target_include_directories(test_daqiri_lifecycle
-                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
-    target_compile_definitions(test_daqiri_lifecycle PRIVATE TESTS_DEBUG)
-    add_dependencies(test_daqiri_lifecycle iio-daqiri iiod-emu)
+    # data=udp buffer lifecycle over the DAQIRI socket engine, against
+    # iiod-emu's mock UDP provider (built on Linux only), which answers the
+    # setup and never streams. The engine binds UDP 127.0.0.1:25101 (see the
+    # YAML), hence the second lock.
+    if (IIOD_EMU_UDP)
+        add_executable(test_daqiri_lifecycle test_daqiri_lifecycle.c)
+        target_link_libraries(test_daqiri_lifecycle PRIVATE iio)
+        target_include_directories(test_daqiri_lifecycle
+                                   PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+        target_compile_definitions(test_daqiri_lifecycle PRIVATE TESTS_DEBUG)
+        add_dependencies(test_daqiri_lifecycle iio-daqiri iiod-emu)
 
-    add_test(NAME daqiri_lifecycle
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh
-                     ${XMLS}/fmcomms2.xml $<TARGET_FILE:test_daqiri_lifecycle>)
-    set_tests_properties(
-        daqiri_lifecycle
-        PROPERTIES
-            LABELS
-            daqiri-loopback
-            ENVIRONMENT
-            "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml"
-            RESOURCE_LOCK
-            "iiod-emu-30431;daqiri-udp-25101")
+        set(LIFECYCLE_LOG ${CMAKE_CURRENT_BINARY_DIR}/daqiri_lifecycle.log)
+        add_test(
+            NAME daqiri_lifecycle
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args
+                --udp-mock-provider ${LIFECYCLE_LOG} -- ${XMLS}/fmcomms2.xml
+                $<TARGET_FILE:test_daqiri_lifecycle>)
 
-    # The channel-length rule needs a device with 16- and 32-bit channels
-    add_test(
-        NAME daqiri_lifecycle_mixed
-        COMMAND
-            ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh
-            ${XMLS}/float_scan_elements.xml
-            $<TARGET_FILE:test_daqiri_lifecycle> --mixed)
-    set_tests_properties(
-        daqiri_lifecycle_mixed
-        PROPERTIES
-            LABELS
-            daqiri-loopback
-            ENVIRONMENT
-            "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml"
-            RESOURCE_LOCK
-            "iiod-emu-30431;daqiri-udp-25101")
+        # The device's own layout: a device with 16- and 32-bit channels
+        set(LIFECYCLE_MIXED_LOG
+            ${CMAKE_CURRENT_BINARY_DIR}/daqiri_lifecycle_mixed.log)
+        add_test(
+            NAME daqiri_lifecycle_mixed
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args
+                --udp-mock-provider ${LIFECYCLE_MIXED_LOG} --
+                ${XMLS}/float_scan_elements.xml
+                $<TARGET_FILE:test_daqiri_lifecycle> --mixed)
 
-    # Standalone VITA 49.2 software framer (libc only; sendmmsg and
-    # clock_nanosleep make it Linux-only, hence here and not with the unit tests)
-    add_executable(vrt_sender vrt_sender.c)
-    set_target_properties(
-        vrt_sender
-        PROPERTIES C_STANDARD 99
-                   C_STANDARD_REQUIRED ON
-                   C_EXTENSIONS OFF)
+        set_tests_properties(
+            daqiri_lifecycle daqiri_lifecycle_mixed
+            PROPERTIES
+                LABELS
+                daqiri-loopback
+                ENVIRONMENT
+                "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml"
+                RESOURCE_LOCK
+                "iiod-emu-30431;daqiri-udp-25101")
+    endif ()
 
-    # framing=vrt end to end: vrt_sender streams to the engine from the YAML's
-    # remote_addr while the test checks blocks and counters against its oracle.
-    add_executable(test_vrt_loopback test_vrt_loopback.c)
-    target_link_libraries(test_vrt_loopback PRIVATE iio)
-    target_include_directories(test_vrt_loopback
-                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
-    target_compile_definitions(test_vrt_loopback PRIVATE TESTS_DEBUG)
-    add_dependencies(test_vrt_loopback iio-daqiri iiod-emu vrt_sender)
-
-    add_test(NAME daqiri_vrt_loopback
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh
-                     ${XMLS}/fmcomms2.xml $<TARGET_FILE:test_vrt_loopback>)
-    set_tests_properties(
-        daqiri_vrt_loopback
-        PROPERTIES
-            LABELS
-            daqiri-loopback
-            ENVIRONMENT
-            "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml;VRT_SENDER=$<TARGET_FILE:vrt_sender>"
-            RESOURCE_LOCK
-            "iiod-emu-30431;daqiri-udp-25101"
-            TIMEOUT
-            60)
+    # UDP sample mode end to end, the backend against iiod-emu --udp as the
+    # reference server through the DAQIRI socket engine: these tests belong
+    # here.
 
     # The api label, once per XML, with TESTS_API_URI pointing at daqiri:.
     add_test(

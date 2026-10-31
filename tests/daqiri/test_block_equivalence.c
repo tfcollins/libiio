@@ -4,7 +4,7 @@
  *
  * Copyright (C) 2026 Analog Devices, Inc.
  *
- * Data-plane test of daqiri:<host>,framing=iiod against iiod-emu: a buffer
+ * Data-plane test of daqiri:<host>,data=tcp against iiod-emu: a buffer
  * streamed through daqiri: must carry the same bytes as one streamed through
  * ip: from the same server, and the context both describe must be the same.
  *
@@ -31,7 +31,7 @@
 #error "TESTS_BUF0_BIN must be the path of tests/resources/xmls/cf-ad9361-lpc_buf0.bin"
 #endif
 
-#define DEFAULT_DAQIRI_URI "daqiri:127.0.0.1,framing=iiod"
+#define DEFAULT_DAQIRI_URI "daqiri:127.0.0.1,data=tcp"
 #define DEFAULT_IP_URI "ip:127.0.0.1"
 #define EMU_PORT 30431
 
@@ -292,15 +292,42 @@ static bool strip_ctx_attr(const char *name, size_t len)
 	       (len > strlen("daqiri,") && !strncmp(name, "daqiri,", strlen("daqiri,")));
 }
 
+/* The daqiri: backend's own buffer attributes (daqiri_data_path, the
+ * counters), in <buffer> and as the legacy <buffer-attribute> */
+static bool strip_buf_attr(const char *name, size_t len)
+{
+	return len > strlen("daqiri_") && !strncmp(name, "daqiri_", strlen("daqiri_"));
+}
+
+/* Where an attribute tag at <p> starts its name and whether to strip it */
+static const char *attr_tag_name(const char *p, bool *strip_ctx)
+{
+	static const char *const tags[] = {
+		"<context-attribute name=\"",
+		"<attribute name=\"",
+		"<buffer-attribute name=\"",
+	};
+	unsigned int i;
+
+	for (i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) {
+		if (!strncmp(p, tags[i], strlen(tags[i]))) {
+			*strip_ctx = !i;
+			return p + strlen(tags[i]);
+		}
+	}
+
+	return NULL;
+}
+
 /*
  * The context XML minus what legitimately differs between backends: the
- * <context> opening tag (backend name, description) and the uri, ip,ip-addr
- * and daqiri,* context attributes.
+ * <context> opening tag (backend name, description), the uri, ip,ip-addr
+ * and daqiri,* context attributes, and the daqiri_* buffer attributes.
  */
 static char *normalize_xml(const char *xml)
 {
-	static const char attr_tag[] = "<context-attribute name=\"";
 	const char *p, *name, *name_end, *end;
+	bool strip, is_ctx;
 	char *out, *o;
 
 	out = malloc(strlen(xml) + 1);
@@ -317,19 +344,21 @@ static char *normalize_xml(const char *xml)
 	o += p - xml;
 
 	for (p = end + 1; *p;) {
-		if (strncmp(p, attr_tag, sizeof(attr_tag) - 1)) {
+		name = attr_tag_name(p, &is_ctx);
+		if (!name) {
 			*o++ = *p++;
 			continue;
 		}
 
-		name = p + sizeof(attr_tag) - 1;
 		name_end = strchr(name, '"');
 		end = strstr(p, "/>");
 		if (!name_end || !end)
 			goto err_free;
 		end += 2;
 
-		if (!strip_ctx_attr(name, (size_t)(name_end - name))) {
+		strip = is_ctx ? strip_ctx_attr(name, (size_t)(name_end - name))
+			       : strip_buf_attr(name, (size_t)(name_end - name));
+		if (!strip) {
 			memcpy(o, p, (size_t)(end - p));
 			o += end - p;
 		}
@@ -513,22 +542,30 @@ out:
 		close(fd);
 }
 
-TEST_FUNCTION(vrt_framing_needs_yaml)
+TEST_FUNCTION(auto_without_yaml_is_tcp)
 {
-	char uri[512], *comma;
+	const struct iio_attr *attr;
+	char uri[512], *comma, val[16] = "";
 	struct rx rx;
 	int ret;
 
-	/* Same host, default framing (vrt), no engine YAML: the context opens,
-	 * a buffer cannot (ctest clears IIO_DAQIRI_YAML for this test) */
+	/* Same host, the default data path (auto), no engine YAML: the buffer
+	 * streams over TCP (ctest clears IIO_DAQIRI_YAML for this test) */
 	snprintf(uri, sizeof(uri), "%s", daqiri_uri);
 	comma = strchr(uri, ',');
 	if (comma)
 		*comma = '\0';
 
 	ret = rx_open(&rx, uri);
-	TEST_ASSERT(rx.ctx != NULL, "framing=vrt context created");
-	TEST_ASSERT_EQ(ret, -EINVAL, "framing=vrt buffer open without yaml is -EINVAL");
+	TEST_ASSERT_EQ(ret, 0, "data=auto buffer opens without a yaml");
+	if (!ret) {
+		attr = iio_buffer_find_attr(
+				iio_device_get_buffer(iio_context_find_device(rx.ctx, DEV_NAME), 0),
+				"daqiri_data_path");
+		TEST_ASSERT(attr && iio_attr_read_raw(attr, val, sizeof(val)) > 0,
+				"daqiri_data_path read");
+		TEST_ASSERT_STR_EQ(val, "tcp", "data=auto without a yaml streams over TCP");
+	}
 	rx_close(&rx);
 }
 
@@ -550,7 +587,7 @@ int main(void)
 	RUN_TEST(cancel_wakes_dequeue);
 	RUN_TEST(data_port_explicit);
 	RUN_TEST(data_port_refused);
-	RUN_TEST(vrt_framing_needs_yaml);
+	RUN_TEST(auto_without_yaml_is_tcp);
 
 	free(ref);
 

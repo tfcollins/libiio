@@ -29,20 +29,20 @@ extern "C" {
  * literal with scope id, plus ":65535". */
 #define DQ_HOST_MAX (255 + sizeof("[]:65535"))
 
-enum dq_framing { DQ_FRAMING_VRT = 0, DQ_FRAMING_IIOD = 1 };
+/* data=: UDP when the server advertises it and a YAML is set; UDP or fail;
+ * never UDP */
+enum dq_data { DQ_DATA_AUTO = 0, DQ_DATA_UDP = 1, DQ_DATA_TCP = 2 };
 enum dq_mem { DQ_MEM_HOST = 0, DQ_MEM_PINNED = 1, DQ_MEM_DEVICE = 2 };
 
 struct dq_opts {
 	char yaml[4096];
 	char iface[64];
 	int rxq;
-	enum dq_framing framing;
+	enum dq_data data;
 	enum dq_mem mem;
 	int gpu;
 	bool lossy;
-	bool swap;
-	bool gap_ts;
-	uint32_t sid, sid_mask;
+	uint32_t udp_dst; /* host order; 0: not given */
 	uint16_t data_port;
 	unsigned poll_us;
 };
@@ -65,45 +65,52 @@ extern const struct iiod_client_ops dq_mgmt_ops;
 
 struct dq_engine;
 struct dq_rxq;
-struct dq_vrt_buffer;
-struct dq_vrt_block;
+struct dq_udp_buffer;
+struct dq_udp_block;
 
 struct iio_context_pdata {
 	struct dq_mgmt mgmt;
 	struct iiod_client *client;
 	struct dq_opts opts;
-	/* Resolved host and management port; framing=iiod buffers connect here */
+	/* Resolved host and management port; buffers connect here */
 	char host[DQ_HOST_MAX];
 	char port[sizeof("65535")];
 	/* What the YAML selects ("socket", "dpdk", "ibverbs", ...), "none"
 	 * without a YAML */
 	const char *engine_kind;
+	/* The server advertises iiod,udp-stream on a binary connection: only
+	 * then may it get the UDP setup command */
+	bool udp_advertised;
 
-	/* framing=vrt: protects engine and vrt_bufs */
+	/* Protects engine and bufs */
 	pthread_mutex_t lock;
-	/* Acquired by the first buffer open, released at shutdown */
+	/* Acquired by the first UDP buffer open, released at shutdown */
 	struct dq_engine *engine;
-	/* Open framing=vrt buffers; shutdown closes what the app left open */
-	struct iio_buffer_pdata *vrt_bufs;
+	/* Open buffers, for their daqiri_* attributes; shutdown closes the UDP
+	 * ones the app left open */
+	struct iio_buffer_pdata *bufs;
 };
+
+enum dq_path { DQ_PATH_TCP = 0, DQ_PATH_UDP = 1 };
 
 struct iio_buffer_pdata {
 	struct iio_context_pdata *ctx;
 	const struct iio_device *dev;
 	unsigned int idx;
-	enum dq_framing framing;
+	enum dq_path path;
 
-	/* framing=iiod: a TCP connection of its own, as ip: does */
+	/* Both paths: a TCP connection to iiod of its own, as ip: does, and
+	 * the buffer opened on it */
 	struct {
 		struct dq_mgmt io;
 		struct iiod_client *client;
 		struct iiod_client_buffer_pdata *pdata;
 	} iiod;
 
-	/* framing=vrt: one engine RX queue and its poller */
+	/* UDP: one engine RX queue, its poller and the stream's control */
 	struct dq_rxq *rxq;
-	struct dq_vrt_buffer *vrt;
-	struct iio_buffer_pdata *next; /* in ctx->vrt_bufs */
+	struct dq_udp_buffer *udp;
+	struct iio_buffer_pdata *next; /* in ctx->bufs */
 };
 
 /*
@@ -114,8 +121,15 @@ struct iio_buffer_pdata {
 struct iio_block_pdata {
 	struct iio_buffer_pdata *buf;
 	struct iio_block_pdata *iiod_block;
-	struct dq_vrt_block *vrt;
+	struct dq_udp_block *udp;
 };
+
+/* daqiri.c: the buffer's own iiod connection and OPEN_BUFFER on it, as ip:
+ * does; and the reverse (CLOSE_BUFFER goes on the management connection).
+ * Open logs its errors; close takes what open left, after a failed DISABLE
+ * no buffer. */
+int dq_iiod_open_buffer(struct iio_buffer_pdata *buf, struct iio_channels_mask *mask);
+void dq_iiod_close_buffer(struct iio_buffer_pdata *buf);
 
 const char *dq_mem_name(enum dq_mem mem);
 
@@ -176,7 +190,7 @@ struct dq_pkt {
 };
 
 /* One burst popped from a queue. raw: the packets start at the Ethernet
- * header (dpdk, ibverbs), else at the VRT header (socket). */
+ * header (dpdk, ibverbs), else at the datagram header (socket). */
 struct dq_burst {
 	struct dq_rxq *q;
 	void *handle;
@@ -201,30 +215,35 @@ void dq_burst_free(struct dq_burst *b);
 int dq_mem_alloc(enum dq_mem k, int gpu, size_t size, void **ptr, size_t *mapped);
 void dq_mem_free(enum dq_mem k, void *ptr, size_t mapped);
 
-/* framing=vrt streaming (daqiri-vrt.c): one RX poller thread per buffer */
-extern const char *const dq_vrt_attr_names[];
-extern const unsigned int dq_vrt_nb_attrs;
-
-struct dq_vrt_buffer *dq_vrt_open(struct iio_buffer_pdata *buf, struct dq_rxq *q,
-		const struct dq_opts *o, enum dq_swap swap, size_t sample_size);
-void dq_vrt_close(struct dq_vrt_buffer *v);
-int dq_vrt_enable(struct dq_vrt_buffer *v, bool enable);
-void dq_vrt_cancel(struct dq_vrt_buffer *v);
-struct dq_vrt_block *dq_vrt_block_new(struct dq_vrt_buffer *v, size_t size, void **data);
-void dq_vrt_block_free(struct dq_vrt_buffer *v, struct dq_vrt_block *b);
-int dq_vrt_enqueue(struct dq_vrt_buffer *v, struct dq_vrt_block *b, size_t bytes_used);
-int dq_vrt_dequeue(struct dq_vrt_buffer *v, struct dq_vrt_block *b, bool nonblock, int timeout_ms);
-ssize_t dq_vrt_read_attr(struct dq_vrt_buffer *v, const char *name, char *dst, size_t len);
-int dq_vrt_write_attr(struct dq_vrt_buffer *v, const char *name, const char *src, size_t len);
+/*
+ * UDP sample mode (daqiri-udp.c). The daqiri_* attributes of every input
+ * buffer: a UDP buffer answers them itself, the others with
+ * dq_attr_read_default().
+ */
+extern const char *const dq_attr_names[];
+extern const unsigned int dq_nb_attrs;
+int dq_attr_index(const char *name); /* -ENOENT if it is not one of them */
+ssize_t dq_attr_read_default(const struct iio_context_pdata *pdata, enum dq_path path,
+		const char *name, char *dst, size_t len);
 
 /*
- * One VRT packet into the stream of v, which the caller locks (the poller).
- * The first hdr_len bytes are at hdr; with header-data split payload_len
- * more follow at payload, otherwise payload_len is 0. A split packet needs
- * the whole prologue and whole samples in hdr, or it is malformed.
+ * Open a buffer that the decision table sent to UDP: its engine queue, its
+ * iiod connection with OPEN_BUFFER, and the probing setup. Returns 0 with
+ * buf->path DQ_PATH_UDP, or DQ_PATH_TCP when the server refused the setup and
+ * data=auto (the buffer then streams over TCP on that connection), or a
+ * negative error (-ENOTSUP for a refusal with data=udp).
  */
-void dq_vrt_packet_segs(struct dq_vrt_buffer *v, const uint8_t *hdr, uint32_t hdr_len,
-		const uint8_t *payload, uint32_t payload_len);
+int dq_udp_open_buffer(struct iio_buffer_pdata *buf, struct iio_channels_mask *mask);
+void dq_udp_close_buffer(struct iio_buffer_pdata *buf);
+int dq_udp_enable_buffer(struct iio_buffer_pdata *buf, size_t nb_samples, bool enable);
+void dq_udp_cancel_buffer(struct iio_buffer_pdata *buf);
+
+struct dq_udp_block *dq_udp_block_new(struct dq_udp_buffer *v, size_t size, void **data);
+void dq_udp_block_free(struct dq_udp_buffer *v, struct dq_udp_block *b);
+int dq_udp_enqueue(struct dq_udp_buffer *v, struct dq_udp_block *b, size_t bytes_used);
+int dq_udp_dequeue(struct dq_udp_buffer *v, struct dq_udp_block *b, bool nonblock, int timeout_ms);
+ssize_t dq_udp_read_attr(struct dq_udp_buffer *v, const char *name, char *dst, size_t len);
+int dq_udp_write_attr(struct dq_udp_buffer *v, const char *name, const char *src, size_t len);
 
 #ifdef __cplusplus
 }
