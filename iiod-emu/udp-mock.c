@@ -30,6 +30,10 @@
 #define SETUP_SHORT_TAIL 4322	    /* the answer's tail is cut, see mock_short_tail() */
 #define START_FAILS 1234	    /* start() fails with -EADDRINUSE */
 
+/* A layout the mock refuses (-ENOTSUP), as a server may refuse a channel
+ * mask it cannot stream: sample sets of 2 bytes, one 16-bit channel */
+#define REFUSED_SAMPLE_SIZE 2
+
 /* How long the cut answer stalls before more bytes follow */
 #define SHORT_TAIL_STALL_MS 2000
 
@@ -94,8 +98,16 @@ static int mock_setup(void *priv, struct buffer_entry *entry, const struct iiod_
 		struct iiod_udp_stream_resp *resp)
 {
 	struct emu_udp_mock_buf *mb = entry->udp_priv;
+	const struct iio_channels_mask *mask;
 
 	mock_log(priv, "setup %u", req->max_payload);
+
+	/* Refused before it leaves any state behind */
+	if (entry->buf_stream) {
+		mask = iio_buffer_stream_get_channels_mask(entry->buf_stream);
+		if (iio_device_get_sample_size(entry->dev, mask) == REFUSED_SAMPLE_SIZE)
+			return -ENOTSUP;
+	}
 
 	if (!mb) {
 		mb = calloc(1, sizeof(*mb));
