@@ -123,6 +123,7 @@ static const struct option options[] = {
 	{ "udp-reorder-window", required_argument, NULL, EMU_UDP_OPT_REORDER_WINDOW },
 	{ "udp-dup-every", required_argument, NULL, EMU_UDP_OPT_DUP_EVERY },
 	{ "udp-json", required_argument, NULL, EMU_UDP_OPT_JSON },
+	{ "udp-mock-provider", required_argument, NULL, EMU_UDP_OPT_MOCK_PROVIDER },
 #endif
 	{ NULL, 0, NULL, 0 },
 };
@@ -320,6 +321,11 @@ static bool udp_cfg_is_valid(const struct emu_udp_cfg *cfg, const char *uri)
 		return false;
 	}
 
+	if (cfg->udp && cfg->mock_log) {
+		fprintf(stderr, "--udp and --udp-mock-provider exclude each other.\n\n");
+		return false;
+	}
+
 	if (cfg->udp && strncmp(uri, "emu:", strlen("emu:"))) {
 		fprintf(stderr, "--udp streams the sample files of an emu: URI, not %s\n\n", uri);
 		return false;
@@ -340,6 +346,7 @@ int main(int argc, char **argv)
 	const char *uri;
 	int c, err;
 #ifdef IIOD_EMU_UDP
+	struct emu_udp_mock *mock = NULL;
 	struct emu_udp_cfg udp_cfg;
 	struct emu_udp *udp = NULL;
 
@@ -432,6 +439,13 @@ int main(int argc, char **argv)
 			goto out_ctx_destroy;
 		}
 	}
+
+	/* Not advertised: the contract test sends the setup regardless */
+	if (udp_cfg.mock_log) {
+		mock = emu_udp_mock_create(udp_cfg.mock_log);
+		if (!mock)
+			goto out_ctx_destroy;
+	}
 #endif
 
 	emu.xml = iiod_get_xml_zstd(emu.ctx, &emu.xml_len);
@@ -456,6 +470,9 @@ int main(int argc, char **argv)
 	if (udp) {
 		iiod_udp_stream_set_ops(&emu_udp_ops, udp);
 		printf("UDP sample mode on\n");
+	} else if (mock) {
+		iiod_udp_stream_set_ops(&emu_udp_mock_ops, mock);
+		printf("UDP mock provider on, logging to %s\n", udp_cfg.mock_log);
 	}
 #endif
 
@@ -516,6 +533,7 @@ out_free_xml:
 out_ctx_destroy:
 #ifdef IIOD_EMU_UDP
 	emu_udp_destroy(udp);
+	emu_udp_mock_destroy(mock);
 #endif
 	iio_context_destroy(emu.ctx);
 out_mutex_destroy:

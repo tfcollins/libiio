@@ -30,6 +30,8 @@ enum emu_udp_option {
 	EMU_UDP_OPT_REORDER_WINDOW,
 	EMU_UDP_OPT_DUP_EVERY,
 	EMU_UDP_OPT_JSON,
+	/* Hidden: the logging provider of the responder's contract test */
+	EMU_UDP_OPT_MOCK_PROVIDER,
 	EMU_UDP_OPT_END,
 };
 
@@ -47,6 +49,7 @@ struct emu_udp_cfg {
 	uint64_t reorder_window; /* 0: off */
 	uint64_t dup_every;
 	const char *json;
+	const char *mock_log; /* --udp-mock-provider */
 };
 
 void emu_udp_cfg_init(struct emu_udp_cfg *cfg);
@@ -72,5 +75,14 @@ struct emu_udp;
 extern const struct iiod_udp_stream_ops emu_udp_ops;
 struct emu_udp *emu_udp_create(const struct emu_udp_cfg *cfg, const char *xml_path);
 void emu_udp_destroy(struct emu_udp *udp);
+
+/*
+ * A provider that sends nothing and writes one line per call to <path>, for
+ * the test of the responder's rules (tests/daqiri/test_udp_provider_contract.c).
+ */
+struct emu_udp_mock;
+extern const struct iiod_udp_stream_ops emu_udp_mock_ops;
+struct emu_udp_mock *emu_udp_mock_create(const char *path);
+void emu_udp_mock_destroy(struct emu_udp_mock *mock);
 
 #endif /* IIOD_EMU_UDP_STREAM_H */

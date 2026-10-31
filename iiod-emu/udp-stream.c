@@ -242,7 +242,7 @@ void emu_udp_cfg_free(struct emu_udp_cfg *cfg)
 
 int emu_udp_parse_option(struct emu_udp_cfg *cfg, int opt, const char *arg)
 {
-	if (opt != EMU_UDP_OPT_UDP)
+	if (opt != EMU_UDP_OPT_UDP && opt != EMU_UDP_OPT_MOCK_PROVIDER)
 		cfg->stream_opt = true;
 
 	switch (opt) {
@@ -267,6 +267,9 @@ int emu_udp_parse_option(struct emu_udp_cfg *cfg, int opt, const char *arg)
 		return parse_u64("--udp-dup-every", arg, 1, UINT64_MAX, &cfg->dup_every);
 	case EMU_UDP_OPT_JSON:
 		cfg->json = arg;
+		return 0;
+	case EMU_UDP_OPT_MOCK_PROVIDER:
+		cfg->mock_log = arg;
 		return 0;
 	default:
 		return -EINVAL;

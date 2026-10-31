@@ -51,7 +51,7 @@ if (NOT WIN32)
 
     if (IIOD_EMU_HAS_SENDMMSG AND IIOD_EMU_HAS_CLOCK_NANOSLEEP)
         set(IIOD_EMU_UDP ON)
-        target_sources(iiod-emu PRIVATE udp-stream.c)
+        target_sources(iiod-emu PRIVATE udp-stream.c udp-mock.c)
         target_compile_definitions(iiod-emu PRIVATE IIOD_EMU_UDP)
     else ()
         message(STATUS "iiod-emu: no sendmmsg() or clock_nanosleep(), "
