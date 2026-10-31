@@ -165,6 +165,13 @@ static void udp_setup(struct iiod_client *client, const struct iio_device *dev,
 	ret = iiod_client_enable_buffer(buf, 0, true, false);
 	TEST_ASSERT_EQ(ret, 0, "buffer enabled");
 
+	/* With a provider, a second enable starts nothing; without one, it is a
+	 * plain enable of an enabled buffer */
+	ret = iiod_client_enable_buffer(buf, 0, true, false);
+	TEST_ASSERT_EQ(ret, 0, "buffer enabled again");
+
+	/* With a provider and an active stream this would be -EBUSY; without
+	 * one, -ENOTSUP comes first */
 	ret = iiod_client_udp_stream_setup(buf, &req, &resp);
 	TEST_ASSERT_EQ(ret, -ENOTSUP, "setup refused while enabled");
 
