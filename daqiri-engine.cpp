@@ -9,13 +9,19 @@
  * failures as negative errno codes.
  */
 
+#include <arpa/inet.h>
 #include <cuda_runtime_api.h>
 #include <daqiri/daqiri.h>
+#include <dirent.h>
 #include <dlfcn.h>
+#include <ifaddrs.h>
 #include <limits.h>
+#include <netinet/in.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -177,6 +183,144 @@ const daqiri::InterfaceConfig *find_iface(const dq_engine *e, int port)
 daqiri::EngineType engine_of(const daqiri::CommonConfig &c)
 {
 	return daqiri::is_explicit_engine_type(c.engine_type) ? c.engine_type : c.engine;
+}
+
+const daqiri::RxQueueConfig *find_rx_queue(const daqiri::InterfaceConfig &ifc, int queue_id)
+{
+	for (const auto &q : ifc.rx_.queues_)
+		if (q.common_.id_ == queue_id)
+			return &q;
+
+	return nullptr;
+}
+
+/* Socket engine UDP queues: one datagram per packet, nothing before its
+ * payload */
+bool is_socket_udp(const daqiri::CommonConfig &c)
+{
+	return c.stream_type == daqiri::StreamType::SOCKET &&
+	       c.protocol == daqiri::SocketProtocol::UDP &&
+	       engine_of(c) != daqiri::EngineType::RDMA;
+}
+
+/* Raw queues of the dpdk and ibverbs engines: Ethernet frames */
+bool is_raw(const daqiri::CommonConfig &c)
+{
+	daqiri::EngineType engine = engine_of(c);
+
+	return c.stream_type == daqiri::StreamType::RAW &&
+	       (engine == daqiri::EngineType::DPDK || engine == daqiri::EngineType::IBVERBS);
+}
+
+/* A dotted quad in host order; 0 for anything else */
+uint32_t ipv4_of(const std::string &s)
+{
+	struct in_addr a;
+
+	if (s.empty() || inet_pton(AF_INET, s.c_str(), &a) != 1)
+		return 0;
+
+	return ntohl(a.s_addr);
+}
+
+/* The network interface of the PCI device <bdf> (the address of a raw
+ * engine's interface), "" when it has none, for example bound to DPDK */
+std::string pci_netdev(const std::string &bdf)
+{
+	std::string name;
+	struct dirent *de;
+	DIR *d;
+
+	if (bdf.empty() || bdf.find('/') != std::string::npos || bdf[0] == '.')
+		return name;
+
+	d = opendir(("/sys/bus/pci/devices/" + bdf + "/net").c_str());
+	if (!d)
+		return name;
+
+	while ((de = readdir(d))) {
+		if (de->d_name[0] != '.') {
+			name = de->d_name;
+			break;
+		}
+	}
+	closedir(d);
+
+	return name;
+}
+
+/* The IPv4 address of interface <name> (host order, 0 if none), or with an
+ * empty <name> the name of the interface that has <ip> */
+uint32_t netdev_ipv4(const std::string &name, uint32_t ip, std::string *found)
+{
+	struct ifaddrs *ifa, *it;
+	uint32_t ret = 0;
+
+	if (getifaddrs(&ifa))
+		return 0;
+
+	for (it = ifa; it; it = it->ifa_next) {
+		uint32_t addr;
+
+		if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET || !it->ifa_name)
+			continue;
+
+		addr = ntohl(((const struct sockaddr_in *)it->ifa_addr)->sin_addr.s_addr);
+		if (!name.empty() ? name == it->ifa_name : addr == ip) {
+			if (found)
+				*found = it->ifa_name;
+			ret = addr;
+			break;
+		}
+	}
+
+	freeifaddrs(ifa);
+
+	return ret;
+}
+
+/* The IP MTU of interface <name>; 0 when unknown */
+unsigned int netdev_mtu(const std::string &name)
+{
+	unsigned int mtu = 0;
+	std::FILE *f;
+
+	if (name.empty() || name.find('/') != std::string::npos)
+		return 0;
+
+	f = std::fopen(("/sys/class/net/" + name + "/mtu").c_str(), "r");
+	if (!f)
+		return 0;
+	if (std::fscanf(f, "%u", &mtu) != 1)
+		mtu = 0;
+	std::fclose(f);
+
+	return mtu;
+}
+
+bool targets_queue(const daqiri::FlowAction &a, int queue_id)
+{
+	if (a.type_ != daqiri::FlowType::QUEUE)
+		return false;
+	if (a.ids_.empty())
+		return a.id_ == queue_id;
+
+	return std::find(a.ids_.begin(), a.ids_.end(), queue_id) != a.ids_.end();
+}
+
+/* The first IPv4/UDP flow of the YAML that steers a UDP port to the queue */
+const daqiri::FlowConfig *queue_flow(const daqiri::InterfaceConfig &ifc, int queue_id)
+{
+	for (const auto &f : ifc.rx_.flows_) {
+		if (f.match_.type_ != daqiri::FlowMatchType::IPV4_UDP || !f.match_.udp_dst_)
+			continue;
+
+		for (const auto &a : daqiri::flow_config_actions(f))
+			if (targets_queue(a, queue_id))
+				return &f;
+	}
+
+	return nullptr;
 }
 
 /* Parse only: never initialises the engine. */
@@ -383,9 +527,8 @@ extern "C" int dq_rxq_open(struct dq_engine *e, int port_id, int queue_id, struc
 {
 	try {
 		const daqiri::CommonConfig &c = e->cfg.common_;
-		const daqiri::RxQueueConfig *qcfg = nullptr;
+		const daqiri::RxQueueConfig *qcfg;
 		const daqiri::InterfaceConfig *ifc;
-		daqiri::EngineType engine = engine_of(c);
 		bool raw;
 
 		std::lock_guard<std::mutex> lock(g_lock);
@@ -396,22 +539,17 @@ extern "C" int dq_rxq_open(struct dq_engine *e, int port_id, int queue_id, struc
 		ifc = find_iface(e, port_id);
 		if (!ifc)
 			return -EINVAL;
-		for (const auto &q : ifc->rx_.queues_)
-			if (q.common_.id_ == queue_id)
-				qcfg = &q;
+		qcfg = find_rx_queue(*ifc, queue_id);
 		if (!qcfg)
 			return -EINVAL;
 
-		/* Socket UDP: one datagram per packet, VRT header first.
-		 * Raw (dpdk, ibverbs): Ethernet frames, which the poller
-		 * validates down to UDP. RoCE, TCP and RDMA are not VRT. */
-		if (c.stream_type == daqiri::StreamType::SOCKET &&
-				c.protocol == daqiri::SocketProtocol::UDP &&
-				engine != daqiri::EngineType::RDMA)
+		/* Socket UDP: one datagram per packet, the datagram header
+		 * first. Raw (dpdk, ibverbs): Ethernet frames, which the
+		 * poller validates down to UDP. RoCE, TCP and RDMA carry no
+		 * UDP sample mode datagrams. */
+		if (is_socket_udp(c))
 			raw = false;
-		else if (c.stream_type == daqiri::StreamType::RAW &&
-				(engine == daqiri::EngineType::DPDK ||
-						engine == daqiri::EngineType::IBVERBS))
+		else if (is_raw(c))
 			raw = true;
 		else
 			return -ENOTSUP;
@@ -436,6 +574,91 @@ extern "C" int dq_rxq_open(struct dq_engine *e, int port_id, int queue_id, struc
 		return 0;
 	} catch (const std::bad_alloc &) {
 		return -ENOMEM;
+	} catch (...) {
+		return -EIO;
+	}
+}
+
+extern "C" int dq_engine_udp_endpoint(struct dq_engine *e, int port_id, int queue_id,
+		uint32_t *local_ip, uint16_t *local_port, uint32_t *remote_ip,
+		uint16_t *remote_port)
+{
+	try {
+		const daqiri::CommonConfig &c = e->cfg.common_;
+		const daqiri::InterfaceConfig *ifc = find_iface(e, port_id);
+		const daqiri::FlowConfig *flow;
+
+		*local_ip = *remote_ip = 0;
+		*local_port = *remote_port = 0;
+
+		if (!ifc || !find_rx_queue(*ifc, queue_id))
+			return -EINVAL;
+
+		if (is_socket_udp(c)) {
+			/* The engine binds local_addr and connects to remote_addr */
+			*local_ip = ipv4_of(ifc->socket_.local_ip_);
+			*local_port = ifc->socket_.local_port_;
+			*remote_ip = ipv4_of(ifc->socket_.remote_ip_);
+			*remote_port = ifc->socket_.remote_port_;
+			return 0;
+		}
+
+		if (!is_raw(c))
+			return -ENOTSUP;
+
+		/* The address of the kernel's interface on that port, which
+		 * answers ARP for it, else whatever destination the flow names */
+		flow = queue_flow(*ifc, queue_id);
+		*local_ip = netdev_ipv4(pci_netdev(ifc->address_), 0, nullptr);
+		if (flow) {
+			if (!*local_ip)
+				*local_ip = ntohl(flow->match_.ipv4_dst_);
+			*local_port = flow->match_.udp_dst_;
+			*remote_ip = ntohl(flow->match_.ipv4_src_);
+			*remote_port = flow->match_.udp_src_;
+		}
+
+		return 0;
+	} catch (...) {
+		return -EIO;
+	}
+}
+
+extern "C" int dq_engine_rx_limits(
+		struct dq_engine *e, int port_id, int queue_id, struct dq_rxq_limits *out)
+{
+	try {
+		const daqiri::CommonConfig &c = e->cfg.common_;
+		const daqiri::InterfaceConfig *ifc = find_iface(e, port_id);
+		const daqiri::RxQueueConfig *qcfg;
+		std::string netdev;
+
+		std::memset(out, 0, sizeof(*out));
+
+		qcfg = ifc ? find_rx_queue(*ifc, queue_id) : nullptr;
+		if (!qcfg)
+			return -EINVAL;
+		if (!is_socket_udp(c) && !is_raw(c))
+			return -ENOTSUP;
+
+		/* With header-data split a packet takes one buffer of each */
+		for (const auto &name : qcfg->common_.mrs_) {
+			auto it = e->cfg.mrs_.find(name);
+
+			if (it != e->cfg.mrs_.end())
+				out->buf_size += it->second.buf_size_;
+		}
+
+		out->raw = is_raw(c);
+		if (out->raw) {
+			netdev = pci_netdev(ifc->address_);
+		} else {
+			out->max_udp_payload = ifc->socket_.max_payload_size_;
+			netdev_ipv4("", ipv4_of(ifc->socket_.local_ip_), &netdev);
+		}
+		out->mtu = netdev_mtu(netdev);
+
+		return 0;
 	} catch (...) {
 		return -EIO;
 	}

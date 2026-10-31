@@ -138,6 +138,29 @@ void dq_engine_release(struct dq_engine *e);
  * socket address) of an interface of the YAML; empty: the first */
 int dq_engine_get_port(struct dq_engine *e, const char *iface, int *port_id);
 
+/*
+ * Where the UDP sample mode datagrams for (port, queue) go to and come from,
+ * host order, 0 where the YAML does not say. Socket engine: local_addr, which
+ * the engine binds, and remote_addr, which it connects to. Raw engines: the
+ * UDP destination port of the flow that steers to the queue and the IPv4
+ * address of the kernel's network interface on that PCI device (else the
+ * flow's IPv4 destination); the source is what the flow matches, if anything.
+ * -EINVAL for no such queue, -ENOTSUP when the engine does not carry UDP.
+ */
+int dq_engine_udp_endpoint(struct dq_engine *e, int port_id, int queue_id, uint32_t *local_ip,
+		uint16_t *local_port, uint32_t *remote_ip, uint16_t *remote_port);
+
+/* What one packet of a receive queue can be; 0 where unknown */
+struct dq_rxq_limits {
+	size_t buf_size;  /* bytes of one packet buffer, both regions with header-data split */
+	unsigned int mtu; /* IP MTU of the network interface (raw: of the PCI device) */
+	unsigned int max_udp_payload; /* socket engine: max_payload_size */
+	bool raw;		      /* a buffer holds the whole Ethernet frame */
+};
+
+/* -EINVAL for no such queue, -ENOTSUP when the engine does not carry UDP */
+int dq_engine_rx_limits(struct dq_engine *e, int port_id, int queue_id, struct dq_rxq_limits *out);
+
 /* One owner per (port, queue): a second open is -EBUSY. Socket engine UDP
  * queues, and raw queues of the dpdk and ibverbs engines; a raw queue with
  * two memory regions is header-data split. -ENOTSUP for anything else
