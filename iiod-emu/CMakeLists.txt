@@ -29,6 +29,40 @@ else ()
     target_compile_definitions(iiod-emu PRIVATE _GNU_SOURCE)
 endif ()
 
+# UDP sample mode (--udp), the reference server of the daqiri: backend's UDP
+# path. It needs sendmmsg() and clock_nanosleep(), as iiod-emu is compiled:
+# with the POSIX level libiio requests (top-level CMakeLists.txt) on top of
+# _GNU_SOURCE, which hides sendmmsg() where _GNU_SOURCE means nothing (the
+# BSDs). Not on Windows nor macOS either.
+set(IIOD_EMU_UDP OFF)
+if (NOT WIN32)
+    include(CheckSymbolExists)
+    set(_saved_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+    set(_saved_CMAKE_REQUIRED_DEFINITIONS "${CMAKE_REQUIRED_DEFINITIONS}")
+    list(APPEND CMAKE_REQUIRED_FLAGS "-std=c${IIO_C_STANDARD}")
+    list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE
+         "-D_POSIX_C_SOURCE=${IIO_POSIX_C_SOURCE}" "-D__XSI_VISIBLE=500")
+    check_symbol_exists(sendmmsg "sys/socket.h" IIOD_EMU_HAS_SENDMMSG)
+    check_symbol_exists(clock_nanosleep "time.h" IIOD_EMU_HAS_CLOCK_NANOSLEEP)
+    set(CMAKE_REQUIRED_FLAGS "${_saved_CMAKE_REQUIRED_FLAGS}")
+    set(CMAKE_REQUIRED_DEFINITIONS "${_saved_CMAKE_REQUIRED_DEFINITIONS}")
+    unset(_saved_CMAKE_REQUIRED_FLAGS)
+    unset(_saved_CMAKE_REQUIRED_DEFINITIONS)
+
+    if (IIOD_EMU_HAS_SENDMMSG AND IIOD_EMU_HAS_CLOCK_NANOSLEEP)
+        set(IIOD_EMU_UDP ON)
+        target_sources(iiod-emu PRIVATE udp-stream.c)
+        target_compile_definitions(iiod-emu PRIVATE IIOD_EMU_UDP)
+    else ()
+        message(STATUS "iiod-emu: no sendmmsg() or clock_nanosleep(), "
+                       "building it without UDP sample mode")
+    endif ()
+endif ()
+# For the tests of UDP sample mode
+set(IIOD_EMU_UDP
+    ${IIOD_EMU_UDP}
+    PARENT_SCOPE)
+
 if (MSVC)
     target_sources(iiod-emu PRIVATE ../deps/wingetopt/src/getopt.c)
     target_include_directories(iiod-emu PRIVATE ../deps/wingetopt/src)
