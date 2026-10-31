@@ -20,12 +20,18 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
+#include "../iiod-responder.h"
 #include "udp-stream.h"
 
 /* max_payload values that make the mock misbehave on purpose */
 #define SETUP_RETURNS_POSITIVE 4321 /* setup() returns 5 */
+#define SETUP_SHORT_TAIL 4322	    /* the answer's tail is cut, see mock_short_tail() */
 #define START_FAILS 1234	    /* start() fails with -EADDRINUSE */
+
+/* How long the cut answer stalls before more bytes follow */
+#define SHORT_TAIL_STALL_MS 2000
 
 struct emu_udp_mock {
 	FILE *log;
@@ -54,6 +60,36 @@ static void __attribute__((format(printf, 2, 3))) mock_log(
 	iio_mutex_unlock(mock->lock);
 }
 
+/*
+ * Break the protocol on purpose: answer with code 12, the length of a response
+ * tail, followed by only 5 bytes of that tail, so that the client reads them
+ * into its buffer for the tail and waits for the rest. SHORT_TAIL_STALL_MS
+ * later, setup() fails and the responder's own answer, 8 bytes, completes the
+ * tail: a client that gave up in between must no longer have that buffer
+ * where the bytes land. The client sends the setup on its default I/O, ID 0.
+ */
+static int mock_short_tail(struct buffer_entry *entry)
+{
+	const struct iiod_command answer = {
+		.client_id = 0,
+		.op = IIOD_OP_RESPONSE,
+		.code = IIOD_UDP_STREAM_RESP_LEN,
+	};
+	static const uint8_t tail[5] = { 0xde, 0xad, 0xbe, 0xef, 0x00 };
+	const struct timespec stall = {
+		.tv_sec = SHORT_TAIL_STALL_MS / 1000,
+		.tv_nsec = (SHORT_TAIL_STALL_MS % 1000) * 1000000L,
+	};
+
+	if (write_all(entry->pdata, &answer, sizeof(answer)) < 0 ||
+			write_all(entry->pdata, tail, sizeof(tail)) < 0)
+		return -EIO;
+
+	nanosleep(&stall, NULL);
+
+	return -EIO;
+}
+
 static int mock_setup(void *priv, struct buffer_entry *entry, const struct iiod_udp_stream_req *req,
 		struct iiod_udp_stream_resp *resp)
 {
@@ -72,6 +108,8 @@ static int mock_setup(void *priv, struct buffer_entry *entry, const struct iiod_
 
 	if (req->max_payload == SETUP_RETURNS_POSITIVE)
 		return 5;
+	if (req->max_payload == SETUP_SHORT_TAIL)
+		return mock_short_tail(entry);
 
 	resp->stream_id = 0x12345678;
 	resp->payload_bytes = req->max_payload & ~15u;
