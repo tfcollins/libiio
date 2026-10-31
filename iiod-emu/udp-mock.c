@@ -5,7 +5,9 @@
  * A UDP stream provider that sends nothing and writes one line per call
  * instead, for the test of the responder's rules for providers
  * (tests/daqiri/test_udp_provider_contract.c). Hidden option
- * --udp-mock-provider <log>.
+ * --udp-mock-provider <log>. The context advertises iiod,udp-stream as with
+ * --udp, so that a client which only sends the setup to a server that does,
+ * like the daqiri: backend, can also be tested against one that never streams.
  *
  * Copyright (C) 2026 Analog Devices, Inc.
  */

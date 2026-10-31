@@ -284,6 +284,10 @@ int main(int argc, char **argv)
 	if (ret)
 		return 1;
 
+	/* As with --udp: a client that checks for it can use the mock */
+	TEST_ASSERT_PTR_NOT_NULL(iio_context_find_attr(ec.ctx, "iiod,udp-stream"),
+			"the mock provider advertises iiod,udp-stream");
+
 	dev = iio_context_find_device(ec.ctx, EMU_DEVICE);
 	TEST_ASSERT_PTR_NOT_NULL(dev, EMU_DEVICE " found");
 	if (!dev)

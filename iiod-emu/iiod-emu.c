@@ -424,15 +424,19 @@ int main(int argc, char **argv)
 	}
 
 #ifdef IIOD_EMU_UDP
-	/* Before the XML is made: clients learn about UDP mode from it */
-	if (udp_cfg.udp) {
+	/* Before the XML is made: clients learn about UDP mode from it. The mock
+	 * provider advertises it too, so that the daqiri: backend, which only
+	 * sends the setup to a server that does, can run against it. */
+	if (udp_cfg.udp || udp_cfg.mock_log) {
 		err = iio_context_add_attr(emu.ctx, "iiod,udp-stream", "1");
 		if (err) {
 			iio_strerror(-err, err_str, sizeof(err_str));
 			fprintf(stderr, "Unable to advertise UDP mode: %s\n", err_str);
 			goto out_ctx_destroy;
 		}
+	}
 
+	if (udp_cfg.udp) {
 		udp = emu_udp_create(&udp_cfg, uri + strlen("emu:"));
 		if (!udp) {
 			fprintf(stderr, "Unable to set up UDP mode\n");
@@ -440,7 +444,6 @@ int main(int argc, char **argv)
 		}
 	}
 
-	/* Not advertised: the contract test sends the setup regardless */
 	if (udp_cfg.mock_log) {
 		mock = emu_udp_mock_create(udp_cfg.mock_log);
 		if (!mock)
