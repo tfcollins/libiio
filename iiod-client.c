@@ -33,6 +33,14 @@ struct iiod_client {
 
 	/* TODO: atomic? */
 	uint16_t next_evstream_idx;
+
+	/* Where the reader thread puts the response tail of a UDP stream setup.
+	 * A server that announces the tail and sends less of it leaves the
+	 * reader inside the tail after the caller timed out, writing the rest
+	 * whenever more bytes come: this outlives the reader thread, which is
+	 * joined before the client is freed, so they can never land in memory
+	 * that has gone back to someone else. */
+	uint8_t udp_resp_tail[IIOD_UDP_STREAM_RESP_LEN];
 };
 
 struct iiod_client_io {
@@ -1575,7 +1583,7 @@ int iiod_client_udp_stream_setup(struct iiod_client_buffer_pdata *pdata,
 		const struct iiod_udp_stream_req *req, struct iiod_udp_stream_resp *resp)
 {
 	struct iiod_client *client = pdata->client;
-	uint8_t req_tail[IIOD_UDP_STREAM_REQ_LEN], resp_tail[IIOD_UDP_STREAM_RESP_LEN];
+	uint8_t req_tail[IIOD_UDP_STREAM_REQ_LEN];
 	struct iiod_buf cmd_buf, resp_buf;
 	struct iiod_command cmd;
 	struct iiod_io *io;
@@ -1590,10 +1598,16 @@ int iiod_client_udp_stream_setup(struct iiod_client_buffer_pdata *pdata,
 	cmd.dev = (uint8_t)iio_device_get_index(pdata->dev);
 	cmd.code = pdata->idx;
 
+	/* The request can stay on the stack: the write is waited for until it
+	 * is done, even past the timeout. The response tail cannot, see
+	 * udp_resp_tail. On every error path below the response is already
+	 * withdrawn (iiod_io_exec_command() cancels it when the send fails, and
+	 * the wait unlinks it when it times out), but neither stops a reader
+	 * that is already copying the tail. */
 	cmd_buf.ptr = req_tail;
 	cmd_buf.size = sizeof(req_tail);
-	resp_buf.ptr = resp_tail;
-	resp_buf.size = sizeof(resp_tail);
+	resp_buf.ptr = client->udp_resp_tail;
+	resp_buf.size = sizeof(client->udp_resp_tail);
 
 	io = iiod_responder_get_default_io(client->responder);
 
@@ -1605,7 +1619,7 @@ int iiod_client_udp_stream_setup(struct iiod_client_buffer_pdata *pdata,
 	if (ret != IIOD_UDP_STREAM_RESP_LEN)
 		return -EPROTO;
 
-	return iiod_udp_stream_resp_unpack(resp_tail, resp);
+	return iiod_udp_stream_resp_unpack(client->udp_resp_tail, resp);
 }
 
 struct iio_block_pdata *iiod_client_create_block(

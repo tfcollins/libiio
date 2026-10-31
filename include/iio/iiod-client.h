@@ -71,7 +71,8 @@ struct iiod_udp_stream_resp;
  * Returns 0 and fills <resp>, or a negative error code: -ENOSYS when the
  * connection does not use the binary protocol, -EPROTO when the answer is not
  * a response tail, otherwise the server's answer (-ENOTSUP when it cannot
- * stream this buffer). */
+ * stream this buffer). After -ETIMEDOUT the connection may be out of step
+ * with the server, if the answer came in part. */
 __api int iiod_client_udp_stream_setup(struct iiod_client_buffer_pdata *pdata,
 		const struct iiod_udp_stream_req *req, struct iiod_udp_stream_resp *resp);
 

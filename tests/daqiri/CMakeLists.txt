@@ -280,6 +280,38 @@ if (WITH_IIOD_EMU
                        iiod-emu-30431
                        TIMEOUT
                        60)
+
+        # The same mock, answering a setup with a response tail cut short: the
+        # client gives up, and the bytes that come later must not land in
+        # memory it no longer owns.
+        add_executable(test_udp_setup_short_tail test_udp_setup_short_tail.c
+                                                 emu_client.c)
+        target_link_libraries(test_udp_setup_short_tail PRIVATE iio)
+        target_include_directories(test_udp_setup_short_tail
+                                   PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+        target_compile_definitions(test_udp_setup_short_tail
+                                   PRIVATE TESTS_DEBUG)
+        add_dependencies(test_udp_setup_short_tail iiod-emu)
+
+        set(UDP_SHORT_TAIL_LOG
+            ${CMAKE_CURRENT_BINARY_DIR}/udp_setup_short_tail.log)
+        add_test(
+            NAME daqiri_udp_setup_short_tail
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args
+                --udp-mock-provider ${UDP_SHORT_TAIL_LOG} --
+                ${XMLS}/fmcomms2.xml $<TARGET_FILE:test_udp_setup_short_tail>
+                ${UDP_SHORT_TAIL_LOG})
+        set_tests_properties(
+            daqiri_udp_setup_short_tail
+            PROPERTIES LABELS
+                       daqiri-emu
+                       ENVIRONMENT
+                       "IIOD_EMU=$<TARGET_FILE:iiod-emu>"
+                       RESOURCE_LOCK
+                       iiod-emu-30431
+                       TIMEOUT
+                       60)
     endif ()
 endif ()
 
