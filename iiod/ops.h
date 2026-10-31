@@ -79,6 +79,11 @@ struct buffer_entry {
 	uint16_t idx;
 	bool is_tx;
 
+	/* UDP sample stream (udp-stream.h): the provider's state, and whether a
+	 * setup succeeded since the buffer was opened or last disabled */
+	void *udp_priv;
+	bool udp_setup;
+
 	SLIST_HEAD(BlockList, block_entry) blocklist;
 	struct iio_mutex *lock;
 };

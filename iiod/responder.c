@@ -18,6 +18,7 @@
 #include "debug.h"
 #include "iio/iio.h"
 #include "ops.h"
+#include "udp-stream.h"
 
 #define IIO_ARRAY_SIZE(x) (sizeof(x) ? sizeof(x) / sizeof((x)[0]) : 0)
 
@@ -43,6 +44,23 @@ static SLIST_HEAD(EventStreamList, evstream_entry) evlist;
 /* Protect evlist from parallel access */
 struct iio_mutex *evlist_lock;
 
+/* The UDP sample stream provider, if one is registered (udp-stream.h) */
+static const struct iiod_udp_stream_ops *udp_stream_ops;
+static void *udp_stream_priv;
+
+void iiod_udp_stream_set_ops(const struct iiod_udp_stream_ops *ops, void *priv)
+{
+	udp_stream_ops = ops;
+	udp_stream_priv = priv;
+}
+
+/* The buffer is going away: closed, or its connection is gone */
+static void udp_stream_release(struct buffer_entry *entry)
+{
+	if (udp_stream_ops && entry->udp_priv)
+		udp_stream_ops->release(udp_stream_priv, entry);
+}
+
 static void free_block_entry(struct block_entry *entry)
 {
 	iiod_io_cancel(entry->io);
@@ -56,6 +74,8 @@ static void free_block_entry(struct block_entry *entry)
 static void free_buffer_entry(struct buffer_entry *entry)
 {
 	struct block_entry *block_entry, *block_next;
+
+	udp_stream_release(entry);
 
 	iio_buffer_stream_cancel(entry->buf_stream);
 
@@ -646,6 +666,24 @@ out_send_response:
 	iiod_io_send_response_code(io, ret);
 }
 
+/* The buffer was just enabled: start its UDP stream, if it was set up */
+static int udp_stream_start(struct buffer_entry *entry)
+{
+	if (!udp_stream_ops || !entry->udp_setup)
+		return 0;
+
+	return udp_stream_ops->start(udp_stream_priv, entry);
+}
+
+/* The buffer is about to be disabled: stop its UDP stream, forget the setup */
+static void udp_stream_stop(struct buffer_entry *entry)
+{
+	if (udp_stream_ops && entry->udp_setup)
+		udp_stream_ops->stop(udp_stream_priv, entry);
+
+	entry->udp_setup = false;
+}
+
 static void handle_set_enabled_buffer(struct parser_pdata *pdata, const struct iiod_command *cmd,
 		struct iiod_command_data *cmd_data, bool enabled)
 {
@@ -665,7 +703,12 @@ static void handle_set_enabled_buffer(struct parser_pdata *pdata, const struct i
 			iio_task_start(entry->enqueue_task);
 			iio_task_start(entry->dequeue_task);
 		}
+
+		if (!ret)
+			ret = udp_stream_start(entry);
 	} else {
+		udp_stream_stop(entry);
+
 		if (NO_THREADS) {
 			iio_task_stop(entry->enqueue_task);
 			iio_task_stop(entry->dequeue_task);
@@ -688,6 +731,63 @@ static void handle_disable_buffer(struct parser_pdata *pdata, const struct iiod_
 		struct iiod_command_data *cmd_data)
 {
 	handle_set_enabled_buffer(pdata, cmd, cmd_data, false);
+}
+
+static void handle_udp_stream_setup(struct parser_pdata *pdata, const struct iiod_command *cmd,
+		struct iiod_command_data *cmd_data)
+{
+	struct iiod_io *io = iiod_command_get_default_io(cmd_data);
+	uint8_t req_tail[IIOD_UDP_STREAM_REQ_LEN], resp_tail[IIOD_UDP_STREAM_RESP_LEN];
+	struct iiod_udp_stream_resp resp = { 0 };
+	struct iiod_udp_stream_req req;
+	struct buffer_entry *entry;
+	struct iiod_buf buf;
+	int ret;
+
+	/* Read the request whatever the answer will be: left unread, it would
+	 * be taken for the next command. */
+	buf.ptr = req_tail;
+	buf.size = sizeof(req_tail);
+
+	ret = iiod_command_data_read(cmd_data, &buf);
+	if (ret < 0)
+		goto out_send_response;
+
+	if (!udp_stream_ops) {
+		ret = -ENOTSUP;
+		goto out_send_response;
+	}
+
+	entry = get_iio_buffer_entry(pdata, cmd);
+	if (iio_err(entry)) {
+		/* No such device, or the buffer is not open */
+		ret = -EINVAL;
+		goto out_send_response;
+	}
+
+	ret = iiod_udp_stream_req_unpack(req_tail, &req);
+	if (ret)
+		goto out_send_response;
+
+	ret = udp_stream_ops->setup(udp_stream_priv, entry, &req, &resp);
+	if (ret) {
+		/* A positive code would be read as the length of a response tail */
+		if (ret > 0)
+			ret = -EIO;
+		goto out_send_response;
+	}
+
+	entry->udp_setup = true;
+
+	iiod_udp_stream_resp_pack(&resp, resp_tail);
+	buf.ptr = resp_tail;
+	buf.size = sizeof(resp_tail);
+
+	iiod_io_send_response(io, IIOD_UDP_STREAM_RESP_LEN, &buf, 1);
+	return;
+
+out_send_response:
+	iiod_io_send_response_code(io, ret);
 }
 
 static void handle_create_block(struct parser_pdata *pdata, const struct iiod_command *cmd,
@@ -1258,6 +1358,8 @@ static const iiod_opcode_fn iiod_op_functions[] = {
 	[IIOD_OP_REFRESH_FORMAT] = handle_refresh_format,
 
 	[IIOD_OP_NOP] = handle_nop,
+
+	[IIOD_OP_UDP_STREAM_SETUP] = handle_udp_stream_setup,
 };
 
 static int iiod_cmd(const struct iiod_command *cmd, struct iiod_command_data *data, void *d)
