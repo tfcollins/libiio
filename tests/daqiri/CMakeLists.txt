@@ -188,7 +188,7 @@ if (WITH_IIOD_EMU
     AND NOT WIN32)
     # iiod-emu registers no UDP stream provider: the setup command must be
     # answered with -ENOTSUP, and the connection must stay usable.
-    add_executable(test_udp_setup_emu test_udp_setup_emu.c)
+    add_executable(test_udp_setup_emu test_udp_setup_emu.c emu_client.c)
     target_link_libraries(test_udp_setup_emu PRIVATE iio)
     target_include_directories(test_udp_setup_emu
                                PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
@@ -208,6 +208,49 @@ if (WITH_IIOD_EMU
                    iiod-emu-30431
                    TIMEOUT
                    60)
+
+    # iiod-emu --udp (built where sendmmsg() and clock_nanosleep() exist) as the
+    # reference server: its datagrams checked from a plain UDP socket bound
+    # where the loopback YAML's engine listens, hence the second lock.
+    if (IIOD_EMU_UDP)
+        add_executable(test_udp_emu_server test_udp_emu_server.c emu_client.c)
+        target_link_libraries(test_udp_emu_server PRIVATE iio)
+        target_include_directories(test_udp_emu_server
+                                   PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+        target_compile_definitions(test_udp_emu_server PRIVATE TESTS_DEBUG)
+        add_dependencies(test_udp_emu_server iiod-emu)
+
+        set(UDP_ORACLE ${CMAKE_CURRENT_BINARY_DIR}/udp_emu_server.json)
+        add_test(
+            NAME daqiri_udp_emu_server
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args --udp
+                --udp-from 127.0.0.1:25102 --udp-pps 2000 --udp-drop-every 10
+                --udp-json ${UDP_ORACLE} -- ${XMLS}/fmcomms2.xml
+                $<TARGET_FILE:test_udp_emu_server>
+                ${XMLS}/cf-ad9361-lpc_buf0.bin ${UDP_ORACLE})
+
+        # One datagram per second: DISABLE, CLOSE_BUFFER and a lost
+        # connection must not wait for the next one.
+        add_test(
+            NAME daqiri_udp_emu_prompt_stop
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args --udp
+                --udp-pps 1 -- ${XMLS}/fmcomms2.xml
+                $<TARGET_FILE:test_udp_emu_server>
+                ${XMLS}/cf-ad9361-lpc_buf0.bin --prompt-stop)
+
+        set_tests_properties(
+            daqiri_udp_emu_server daqiri_udp_emu_prompt_stop
+            PROPERTIES LABELS
+                       daqiri-emu
+                       ENVIRONMENT
+                       "IIOD_EMU=$<TARGET_FILE:iiod-emu>"
+                       RESOURCE_LOCK
+                       "iiod-emu-30431;daqiri-udp-25101"
+                       TIMEOUT
+                       60)
+    endif ()
 endif ()
 
 # VITA 49.2 prologue parser unit test: header-only, needs neither libiio's

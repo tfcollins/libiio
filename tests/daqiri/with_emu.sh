@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: MIT
 #
 # Run a command against an iiod-emu instance serving <xml> on 127.0.0.1:30431.
-# Usage: with_emu.sh <xml> <cmd...>
+# Usage: with_emu.sh [--emu-args <arg>... --] <xml> <cmd...>
+#        The arguments between --emu-args and -- go to iiod-emu, ahead of the
+#        URI: with_emu.sh --emu-args --udp --udp-pps 2000 -- <xml> <cmd...>
 # Env:   IIOD_EMU  path to the iiod-emu binary (default: iiod-emu from PATH)
 #
 # Exits with the command's status. The emulator's output is shown only when
@@ -11,10 +13,24 @@ set -u
 
 PORT=30431
 
-if [ $# -lt 2 ]; then
-	echo "usage: $0 <xml> <cmd...>" >&2
+usage() {
+	echo "usage: $0 [--emu-args <arg>... --] <xml> <cmd...>" >&2
 	exit 2
+}
+
+# The emulator's own arguments, each one single-quoted for the eval below
+emu_args=
+if [ "${1-}" = --emu-args ]; then
+	shift
+	while [ $# -gt 0 ] && [ "$1" != -- ]; do
+		emu_args="$emu_args '$(printf '%s' "$1" | sed "s/'/'\\\\''/g")'"
+		shift
+	done
+	[ $# -gt 0 ] || usage
+	shift
 fi
+
+[ $# -ge 2 ] || usage
 xml=$1
 shift
 emu=${IIOD_EMU:-iiod-emu}
@@ -25,7 +41,8 @@ if nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
 fi
 
 log=$(mktemp "${TMPDIR:-/tmp}/with_emu.XXXXXX") || exit 1
-"$emu" -p "$PORT" "emu:$xml" >"$log" 2>&1 &
+# exec, so that $! is the emulator itself
+(eval "set -- $emu_args" && exec "$emu" -p "$PORT" "$@" "emu:$xml") >"$log" 2>&1 &
 pid=$!
 
 cleanup() {
