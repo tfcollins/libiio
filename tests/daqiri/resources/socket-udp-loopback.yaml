@@ -1,4 +1,4 @@
-# DAQIRI socket engine for the daqiri: loopback tests (framing=vrt).
+# DAQIRI socket engine for the daqiri: loopback tests (data=udp).
 # One UDP server interface on 127.0.0.1:25101. The socket is connect()ed to
 # remote_addr, so the kernel only delivers datagrams sent from
 # 127.0.0.1:25102: test senders must bind that address.

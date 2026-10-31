@@ -860,13 +860,13 @@ iio_option(
     "Build the DAQIRI backend module (requires DAQIRI, C++17, CUDA toolkit)"
     OFF "POSIX")
 
-# DAQIRI-free VRT framing helpers (sequence tracker, block assembler). Only
-# libc: shared by the daqiri module and by its unit tests, which need neither
-# DAQIRI nor libiio.
+# DAQIRI-free framing helpers of UDP sample mode (datagram checks and
+# sequence tracker, block assembler, Ethernet/IPv4/UDP parser). Only libc:
+# shared by the daqiri module and by its unit tests, which need neither DAQIRI
+# nor libiio.
 if (WITH_DAQIRI_BACKEND OR (WITH_TESTS AND NOT WIN32))
-    add_library(
-        iio_daqiri_framing OBJECT daqiri-vrt-stream.c daqiri-udp-stream.c
-                                  daqiri-asm.c daqiri-l2.c)
+    add_library(iio_daqiri_framing OBJECT daqiri-udp-stream.c daqiri-asm.c
+                                          daqiri-l2.c)
     target_include_directories(iio_daqiri_framing
                                PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(iio_daqiri_framing PRIVATE iio_common_config)

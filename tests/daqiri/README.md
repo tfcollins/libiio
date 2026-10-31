@@ -76,19 +76,19 @@ channels of the device, which is not the stream layout.
 
 ## Golden vectors
 
-`tests/resources/vrt/*.bin`, `manifest.json` and `expected.h` are produced by
+`tests/resources/daqiri/*.bin`, `manifest.json` and `expected.h` are produced by
 `gen_golden.py` (pure Python, deterministic):
 
-    python3 tests/daqiri/gen_golden.py tests/resources/vrt
-    ./format.sh
+    python3 tests/daqiri/gen_golden.py tests/resources/daqiri
+    clang-format -i tests/resources/daqiri/expected.h
 
-Packets are VITA 49.2 IF-Data with Stream ID `0x01000000`, a Class ID with OUI
-`0x000456` and packet class `0x0010` (the vrt49 CI16 format: an I/Q pair of
-16-bit samples, big-endian), TSI UTC at 1700000000 and the sample count as
-fractional timestamp. The payload pattern `ramp16` has sample n with
-`I = n & 0x7FFF` and `Q = (0x8000 - n) & 0xFFFF`; after the backend's byte swap
-the host sees little-endian int16 I at offset 0 and Q at offset 2. `vrt_sender`
-and `iio_daqiri_bench --check ramp` use the same definition.
+The `udp-*.bin` vectors are UDP sample mode datagrams of stream ID
+`0xC0FFEE01` with 1440-byte payloads, one valid and the others malformed or
+foreign in one way each; the `l2-*.bin` ones are Ethernet frames carrying such
+a datagram, for the raw-queue parser. The payload pattern `ramp16_le` has
+sample n with `I = n & 0x7FFF` and `Q = (0x8000 - n) & 0xFFFF`, little-endian
+int16 I at offset 0 and Q at offset 2, as the device sends them: UDP sample
+mode never swaps. `iio_daqiri_bench --check ramp` uses the same definition.
 
 ## Manual gate: a Kuiper board with ASCII-only `iiod`
 

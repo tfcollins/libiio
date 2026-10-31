@@ -38,7 +38,7 @@ struct dq_udp_golden {
 };
 
 #define DQ_UDP_GOLDEN
-#include "../resources/vrt/expected.h"
+#include "../resources/daqiri/expected.h"
 
 #define N_GOLDEN (sizeof(udp_golden) / sizeof(udp_golden[0]))
 

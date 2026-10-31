@@ -289,91 +289,25 @@ if (WITH_IIOD_EMU
     endif ()
 endif ()
 
-# VITA 49.2 prologue parser unit test: header-only, needs neither libiio's
-# daqiri module nor the DAQIRI SDK, so it is built whenever tests are.
+# Unit tests of the framing objects (iio_daqiri_framing, top-level
+# CMakeLists): libc only, they need neither libiio's daqiri module nor the
+# DAQIRI SDK, so they are built whenever tests are. test_udp_header,
+# test_udp_hds_split and test_l2_parse read the golden vectors.
 if (WITH_TESTS AND NOT WIN32)
-    add_executable(test_vrt_prologue test_vrt_prologue.c)
-    target_include_directories(test_vrt_prologue
-                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
-    target_compile_definitions(
-        test_vrt_prologue
-        PRIVATE TESTS_VRT_DIR="${CMAKE_SOURCE_DIR}/tests/resources/vrt")
-    set_target_properties(
-        test_vrt_prologue
-        PROPERTIES C_STANDARD 99
-                   C_STANDARD_REQUIRED ON
-                   C_EXTENSIONS OFF)
-    add_test(NAME test_vrt_prologue COMMAND test_vrt_prologue)
-    set_tests_properties(test_vrt_prologue PROPERTIES LABELS daqiri)
-
-    # Sequence tracker and block assembler unit tests, built against the
-    # DAQIRI-free framing objects (iio_daqiri_framing, top-level CMakeLists).
-    add_executable(test_vrt_gap test_vrt_gap.c)
-    target_link_libraries(test_vrt_gap PRIVATE iio_daqiri_framing)
-    target_include_directories(test_vrt_gap
-                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
-    set_target_properties(
-        test_vrt_gap
-        PROPERTIES C_STANDARD 99
-                   C_STANDARD_REQUIRED ON
-                   C_EXTENSIONS OFF)
-    add_test(NAME test_vrt_gap COMMAND test_vrt_gap)
-    set_tests_properties(test_vrt_gap PROPERTIES LABELS daqiri)
-
-    add_executable(test_vrt_assembler test_vrt_assembler.c)
-    target_link_libraries(test_vrt_assembler PRIVATE iio_daqiri_framing)
-    target_include_directories(test_vrt_assembler
-                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
-    set_target_properties(
-        test_vrt_assembler
-        PROPERTIES C_STANDARD 99
-                   C_STANDARD_REQUIRED ON
-                   C_EXTENSIONS OFF)
-    add_test(NAME test_vrt_assembler COMMAND test_vrt_assembler)
-    set_tests_properties(test_vrt_assembler PROPERTIES LABELS daqiri)
-
-    add_executable(test_l2_parse test_l2_parse.c)
-    target_link_libraries(test_l2_parse PRIVATE iio_daqiri_framing)
-    target_include_directories(test_l2_parse
-                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
-    target_compile_definitions(
-        test_l2_parse
-        PRIVATE TESTS_VRT_DIR="${CMAKE_SOURCE_DIR}/tests/resources/vrt")
-    set_target_properties(
-        test_l2_parse
-        PROPERTIES C_STANDARD 99
-                   C_STANDARD_REQUIRED ON
-                   C_EXTENSIONS OFF)
-    add_test(NAME test_l2_parse COMMAND test_l2_parse)
-    set_tests_properties(test_l2_parse PROPERTIES LABELS daqiri)
-
-    add_executable(test_vrt_hds_split test_vrt_hds_split.c)
-    target_link_libraries(test_vrt_hds_split PRIVATE iio_daqiri_framing)
-    target_include_directories(test_vrt_hds_split
-                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
-    target_compile_definitions(
-        test_vrt_hds_split
-        PRIVATE TESTS_VRT_DIR="${CMAKE_SOURCE_DIR}/tests/resources/vrt")
-    set_target_properties(
-        test_vrt_hds_split
-        PROPERTIES C_STANDARD 99
-                   C_STANDARD_REQUIRED ON
-                   C_EXTENSIONS OFF)
-    add_test(NAME test_vrt_hds_split COMMAND test_vrt_hds_split)
-    set_tests_properties(test_vrt_hds_split PROPERTIES LABELS daqiri)
-
-    # UDP sample mode receive side: datagram header checks against the
-    # udp-*.bin golden vectors, the 64-bit sequence tracker, and datagrams
-    # cut in two by header-data split. Framing objects only.
-    foreach (_test test_udp_header test_udp_seq test_udp_hds_split)
+    # The UDP sample mode receive side (datagram header checks, the 64-bit
+    # sequence tracker, datagrams cut in two by header-data split), the block
+    # assembler and the Ethernet/IPv4/UDP parser of raw queues.
+    foreach (_test test_udp_header test_udp_seq test_udp_hds_split test_asm
+                   test_l2_parse)
         add_executable(${_test} ${_test}.c)
         target_link_libraries(${_test} PRIVATE iio_daqiri_framing)
         target_include_directories(${_test}
                                    PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
         target_compile_definitions(
             ${_test}
-            PRIVATE TESTS_DEBUG
-                    TESTS_DAQIRI_DIR="${CMAKE_SOURCE_DIR}/tests/resources/vrt")
+            PRIVATE
+                TESTS_DEBUG
+                TESTS_DAQIRI_DIR="${CMAKE_SOURCE_DIR}/tests/resources/daqiri")
         set_target_properties(
             ${_test}
             PROPERTIES C_STANDARD 99

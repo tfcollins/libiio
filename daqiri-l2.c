@@ -9,7 +9,6 @@
  */
 
 #include "daqiri-l2.h"
-#include "daqiri-vrt-prologue.h"
 
 #define ETH_HDR_LEN 14
 #define VLAN_TAG_LEN 4
@@ -26,6 +25,11 @@
 static inline uint16_t be16(const uint8_t *p)
 {
 	return (uint16_t)(((unsigned int)p[0] << 8) | p[1]);
+}
+
+static inline uint32_t be32(const uint8_t *p)
+{
+	return ((uint32_t)be16(p) << 16) | be16(p + 2);
 }
 
 enum dq_l2_status dq_l2_parse(const uint8_t *p, uint32_t len, struct dq_l2_info *out)
@@ -73,8 +77,8 @@ enum dq_l2_status dq_l2_parse(const uint8_t *p, uint32_t len, struct dq_l2_info 
 	out->udp_src = be16(udp);
 	out->udp_dst = be16(udp + 2);
 	out->vlan_id = vlan_id;
-	out->ip_src = dq_vrt_be32(ip + 12);
-	out->ip_dst = dq_vrt_be32(ip + 16);
+	out->ip_src = be32(ip + 12);
+	out->ip_dst = be32(ip + 16);
 	return DQ_L2_OK;
 }
 

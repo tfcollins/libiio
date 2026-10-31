@@ -24,7 +24,7 @@ struct dq_l2_golden {
 };
 
 #define DQ_L2_GOLDEN
-#include "../resources/vrt/expected.h"
+#include "../resources/daqiri/expected.h"
 
 #define N_GOLDEN (sizeof(l2_golden) / sizeof(l2_golden[0]))
 
@@ -36,7 +36,7 @@ static uint8_t *load(const char *name, size_t *len)
 	long sz;
 	FILE *f;
 
-	snprintf(path, sizeof(path), "%s/%s", TESTS_VRT_DIR, name);
+	snprintf(path, sizeof(path), "%s/%s", TESTS_DAQIRI_DIR, name);
 	f = fopen(path, "rb");
 	if (!f)
 		return NULL;
