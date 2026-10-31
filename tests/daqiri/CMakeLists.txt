@@ -388,6 +388,27 @@ if (WITH_TESTS AND NOT WIN32)
     add_test(NAME test_vrt_hds_split COMMAND test_vrt_hds_split)
     set_tests_properties(test_vrt_hds_split PROPERTIES LABELS daqiri)
 
+    # UDP sample mode receive side: datagram header checks against the
+    # udp-*.bin golden vectors, the 64-bit sequence tracker, and datagrams
+    # cut in two by header-data split. Framing objects only.
+    foreach (_test test_udp_header test_udp_seq test_udp_hds_split)
+        add_executable(${_test} ${_test}.c)
+        target_link_libraries(${_test} PRIVATE iio_daqiri_framing)
+        target_include_directories(${_test}
+                                   PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+        target_compile_definitions(
+            ${_test}
+            PRIVATE TESTS_DEBUG
+                    TESTS_DAQIRI_DIR="${CMAKE_SOURCE_DIR}/tests/resources/vrt")
+        set_target_properties(
+            ${_test}
+            PROPERTIES C_STANDARD 99
+                       C_STANDARD_REQUIRED ON
+                       C_EXTENSIONS OFF)
+        add_test(NAME ${_test} COMMAND ${_test})
+        set_tests_properties(${_test} PROPERTIES LABELS daqiri)
+    endforeach ()
+
     # UDP sample stream codec (iiod-udp-stream.h): header-only, libc only.
     add_executable(test_udp_stream_codec test_udp_stream_codec.c)
     target_include_directories(test_udp_stream_codec

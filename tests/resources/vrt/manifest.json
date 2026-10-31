@@ -1,4 +1,8 @@
 {
+  "udp_stream": {
+    "stream_id": 3237998081,
+    "payload_bytes": 1440
+  },
   "files": [
     {
       "name": "if_data_sid_full.bin",
@@ -619,6 +623,97 @@
       "vlan_id": 0,
       "ip_src": 0,
       "ip_dst": 0
+    },
+    {
+      "name": "udp-valid.bin",
+      "kind": "udp",
+      "version": 1,
+      "flags": 0,
+      "payload_length": 1440,
+      "stream_id": 3237998081,
+      "sequence": 4294967298,
+      "length": 1456,
+      "unpack": "0",
+      "expect": "data",
+      "payload_pattern": "ramp16_le"
+    },
+    {
+      "name": "udp-flags.bin",
+      "kind": "udp",
+      "version": 1,
+      "flags": 128,
+      "payload_length": 1440,
+      "stream_id": 3237998081,
+      "sequence": 4294967298,
+      "length": 1456,
+      "unpack": "0",
+      "expect": "data",
+      "payload_pattern": "ramp16_le"
+    },
+    {
+      "name": "udp-bad-version.bin",
+      "kind": "udp",
+      "version": 2,
+      "flags": 0,
+      "payload_length": 1440,
+      "stream_id": 3237998081,
+      "sequence": 4294967298,
+      "length": 1456,
+      "unpack": "-EPROTO",
+      "expect": "malformed",
+      "payload_pattern": "ramp16_le"
+    },
+    {
+      "name": "udp-short-header.bin",
+      "kind": "udp",
+      "version": 1,
+      "flags": 0,
+      "payload_length": 1440,
+      "stream_id": 3237998081,
+      "sequence": 4294967298,
+      "length": 15,
+      "unpack": "-EBADMSG",
+      "expect": "malformed",
+      "payload_pattern": "ramp16_le"
+    },
+    {
+      "name": "udp-length-mismatch.bin",
+      "kind": "udp",
+      "version": 1,
+      "flags": 0,
+      "payload_length": 1440,
+      "stream_id": 3237998081,
+      "sequence": 4294967298,
+      "length": 1440,
+      "unpack": "0",
+      "expect": "malformed",
+      "payload_pattern": "ramp16_le"
+    },
+    {
+      "name": "udp-payload-length.bin",
+      "kind": "udp",
+      "version": 1,
+      "flags": 0,
+      "payload_length": 1424,
+      "stream_id": 3237998081,
+      "sequence": 4294967298,
+      "length": 1440,
+      "unpack": "0",
+      "expect": "malformed",
+      "payload_pattern": "ramp16_le"
+    },
+    {
+      "name": "udp-foreign.bin",
+      "kind": "udp",
+      "version": 1,
+      "flags": 0,
+      "payload_length": 1440,
+      "stream_id": 3237998082,
+      "sequence": 4294967298,
+      "length": 1456,
+      "unpack": "0",
+      "expect": "foreign",
+      "payload_pattern": "ramp16_le"
     }
   ]
 }

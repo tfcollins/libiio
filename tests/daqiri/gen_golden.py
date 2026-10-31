@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Generate the VITA 49.2 golden vectors used by the DAQIRI backend tests.
+"""Generate the golden vectors used by the DAQIRI backend tests.
 
 Usage: gen_golden.py <outdir>
 
@@ -11,7 +11,20 @@ clang-format clean.
 
 Payload pattern "ramp16": sample n has I = n & 0x7FFF and
 Q = (0x8000 - n) & 0xFFFF, each packed as a big-endian 16-bit word, I first.
+Payload pattern "ramp16_le": the same samples, each word little-endian. UDP
+sample mode carries the device's own layout and the host never swaps it; the
+ADRV9002 and the HDL ramp16 test pattern are little-endian int16, which is
+what iio_daqiri_bench --check ramp reads. Every UDP-mode vector uses it.
 Payload pattern "zero": all zero bytes.
+
+The udp-*.bin vectors are UDP sample mode datagrams (iiod-udp-stream.h): a
+16-byte big-endian header (version, flags, payload length, stream ID, 64-bit
+sequence number), then the payload. Their manifest entries have "kind":
+"udp", the iiod_udp_stream_hdr_unpack() result and what the receive side
+makes of them for a stream programmed with UDP_STREAM_ID and
+UDP_PAYLOAD_BYTES ("data", "malformed" or "foreign"); expected.h carries them
+in udp_golden[] and a test defining DQ_UDP_GOLDEN sees only that table
+(struct dq_udp_golden).
 
 The l2-*.bin vectors are Ethernet frames for the raw-queue parser
 (daqiri-l2.c): Ethernet II, optional 802.1Q, IPv4 (checksummed), UDP
@@ -46,11 +59,25 @@ L2_UDP_SRC = 49152
 L2_UDP_DST = 25101
 L2_VLAN_ID = 100
 
+UDP_STREAM_ID = 0xC0FFEE01
+UDP_FOREIGN_ID = 0xC0FFEE02
+UDP_SAMPLES = 360  # 1440 payload bytes, 90 beats of 16 bytes
+UDP_PAYLOAD_BYTES = UDP_SAMPLES * 4
+UDP_SEQUENCE = 0x0000000100000002  # both 32-bit halves in use
+UDP_HDR_LEN = 16
+
 
 def ramp16(nsamples):
     out = bytearray()
     for n in range(nsamples):
         out += struct.pack('>HH', n & 0x7FFF, (0x8000 - n) & 0xFFFF)
+    return bytes(out)
+
+
+def ramp16_le(nsamples):
+    out = bytearray()
+    for n in range(nsamples):
+        out += struct.pack('<HH', n & 0x7FFF, (0x8000 - n) & 0xFFFF)
     return bytes(out)
 
 
@@ -225,6 +252,63 @@ def vectors():
     return out
 
 
+def build_udp(payload, version=1, flags=0, payload_length=None,
+              stream_id=UDP_STREAM_ID, sequence=UDP_SEQUENCE):
+    """Return one UDP sample mode datagram: the header, then the payload."""
+    plen = len(payload) if payload_length is None else payload_length
+    return struct.pack('>BBHIQ', version, flags, plen, stream_id,
+                       sequence) + payload
+
+
+def udp_vectors():
+    """Return [(name, data, manifest entry)] for the udp-*.bin vectors."""
+    out = []
+    payload = ramp16_le(UDP_SAMPLES)
+
+    def add(name, data, unpack, expect, version=1, flags=0,
+            payload_length=UDP_PAYLOAD_BYTES, stream_id=UDP_STREAM_ID):
+        out.append((name, data, dict(
+            kind='udp', version=version, flags=flags,
+            payload_length=payload_length, stream_id=stream_id,
+            sequence=UDP_SEQUENCE, length=len(data), unpack=unpack,
+            expect=expect, payload_pattern='ramp16_le')))
+
+    valid = build_udp(payload)
+    assert len(valid) == UDP_HDR_LEN + UDP_PAYLOAD_BYTES
+    add('udp-valid.bin', valid, '0', 'data')
+    # The reserved flags byte is not checked
+    add('udp-flags.bin', build_udp(payload, flags=0x80), '0', 'data',
+        flags=0x80)
+    add('udp-bad-version.bin', build_udp(payload, version=2), '-EPROTO',
+        'malformed', version=2)
+    add('udp-short-header.bin', valid[:UDP_HDR_LEN - 1], '-EBADMSG',
+        'malformed')
+    # The header announces the stream's payload size, 16 bytes are missing
+    add('udp-length-mismatch.bin',
+        build_udp(payload[:-16], payload_length=UDP_PAYLOAD_BYTES), '0',
+        'malformed')
+    # Consistent in itself, but not the stream's payload size
+    add('udp-payload-length.bin', build_udp(payload[:-16]), '0', 'malformed',
+        payload_length=UDP_PAYLOAD_BYTES - 16)
+    add('udp-foreign.bin', build_udp(payload, stream_id=UDP_FOREIGN_ID), '0',
+        'foreign', stream_id=UDP_FOREIGN_ID)
+    return out
+
+
+UDP_FIELDS = ['unpack', 'version', 'flags', 'payload_length', 'stream_id',
+              'sequence', 'length', 'expect']
+
+
+def udp_c_val(key, v):
+    if key == 'stream_id':
+        return '0x%08XU' % v
+    if key == 'sequence':
+        return '0x%016XULL' % v
+    if key == 'expect':
+        return 'DQ_UDP_EXPECT_%s' % v.upper()
+    return c_val(v)
+
+
 FIELDS = ['type', 'has_class', 'has_trailer', 'tsi', 'tsf', 'pkt_count',
           'size_words', 'stream_id', 'oui', 'info_class', 'packet_class',
           'tsi_secs', 'tsf_frac', 'prologue_bytes', 'payload_bytes', 'valid']
@@ -263,18 +347,34 @@ def main(argv):
             ['%s' % entry['status']] + [
                 '0x%08XU' % entry[k] if k.startswith('ip_') else
                 c_val(entry[k]) for k in L2_FIELDS])))
+    udprows = []
+    for name, data, entry in udp_vectors():
+        with open(os.path.join(outdir, name), 'wb') as f:
+            f.write(data)
+        files.append(dict(name=name, **entry))
+        udprows.append('\t{"%s", %s},' % (name, ', '.join(
+            udp_c_val(k, entry[k]) for k in UDP_FIELDS)))
     with open(os.path.join(outdir, 'manifest.json'), 'w') as f:
-        json.dump({'files': files}, f, indent=2)
+        json.dump({'udp_stream': {'stream_id': UDP_STREAM_ID,
+                                  'payload_bytes': UDP_PAYLOAD_BYTES},
+                   'files': files}, f, indent=2)
         f.write('\n')
     with open(os.path.join(outdir, 'expected.h'), 'w') as f:
         f.write('/* Generated by tests/daqiri/gen_golden.py; '
                 'do not edit. */\n')
-        f.write('#ifndef DQ_L2_GOLDEN\n')
-        f.write('static const struct dq_vrt_golden golden[] = {\n')
-        f.write('\n'.join(rows) + '\n};\n')
-        f.write('#else\n')
+        f.write('#if defined(DQ_L2_GOLDEN)\n')
         f.write('static const struct dq_l2_golden l2_golden[] = {\n')
         f.write('\n'.join(l2rows) + '\n};\n')
+        f.write('#elif defined(DQ_UDP_GOLDEN)\n')
+        f.write('/* The stream the expectations of udp_golden[] are for */\n')
+        f.write('#define DQ_UDP_GOLDEN_STREAM_ID 0x%08XU\n' % UDP_STREAM_ID)
+        f.write('#define DQ_UDP_GOLDEN_PAYLOAD_BYTES %d\n'
+                % UDP_PAYLOAD_BYTES)
+        f.write('static const struct dq_udp_golden udp_golden[] = {\n')
+        f.write('\n'.join(udprows) + '\n};\n')
+        f.write('#else\n')
+        f.write('static const struct dq_vrt_golden golden[] = {\n')
+        f.write('\n'.join(rows) + '\n};\n')
         f.write('#endif\n')
     return 0
 
