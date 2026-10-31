@@ -3,8 +3,8 @@
  * iiod-emu - IIO hardware emulator
  *
  * UDP sample mode (--udp): a reference server for the UDP path of the daqiri:
- * backend. POSIX only (sendmmsg, clock_nanosleep); the build leaves it out
- * where they are missing.
+ * backend. Linux only (sendmmsg, clock_nanosleep): the build leaves it out
+ * elsewhere.
  *
  * Copyright (C) 2026 Analog Devices, Inc.
  */

@@ -30,12 +30,12 @@ else ()
 endif ()
 
 # UDP sample mode (--udp), the reference server of the daqiri: backend's UDP
-# path. It needs sendmmsg() and clock_nanosleep(), as iiod-emu is compiled:
-# with the POSIX level libiio requests (top-level CMakeLists.txt) on top of
-# _GNU_SOURCE, which hides sendmmsg() where _GNU_SOURCE means nothing (the
-# BSDs). Not on Windows nor macOS either.
+# path. Linux only, where that backend and its tests run: elsewhere (Windows,
+# macOS, the BSDs) iiod-emu builds as before, without --udp. Its sendmmsg()
+# and clock_nanosleep() are probed with the flags iiod-emu is compiled with:
+# the top-level ones (C standard, POSIX level) and _GNU_SOURCE.
 set(IIOD_EMU_UDP OFF)
-if (NOT WIN32)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     include(CheckSymbolExists)
     set(_saved_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
     set(_saved_CMAKE_REQUIRED_DEFINITIONS "${CMAKE_REQUIRED_DEFINITIONS}")

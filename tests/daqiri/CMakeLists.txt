@@ -209,9 +209,9 @@ if (WITH_IIOD_EMU
                    TIMEOUT
                    60)
 
-    # iiod-emu --udp (built where sendmmsg() and clock_nanosleep() exist) as the
-    # reference server: its datagrams checked from a plain UDP socket bound
-    # where the loopback YAML's engine listens, hence the second lock.
+    # iiod-emu --udp (built on Linux only) as the reference server: its
+    # datagrams checked from a plain UDP socket bound where the loopback YAML's
+    # engine listens, hence the second lock.
     if (IIOD_EMU_UDP)
         add_executable(test_udp_emu_server test_udp_emu_server.c emu_client.c)
         target_link_libraries(test_udp_emu_server PRIVATE iio)
