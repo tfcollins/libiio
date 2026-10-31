@@ -54,9 +54,22 @@ void iiod_udp_stream_set_ops(const struct iiod_udp_stream_ops *ops, void *priv)
 	udp_stream_priv = priv;
 }
 
+/* Stop the buffer's UDP stream if one is running, and drop any setup that no
+ * enable has used */
+static void udp_stream_stop(struct buffer_entry *entry)
+{
+	if (udp_stream_ops && entry->udp_active)
+		udp_stream_ops->stop(udp_stream_priv, entry);
+
+	entry->udp_active = false;
+	entry->udp_setup = false;
+}
+
 /* The buffer is going away: closed, or its connection is gone */
 static void udp_stream_release(struct buffer_entry *entry)
 {
+	udp_stream_stop(entry);
+
 	if (udp_stream_ops && entry->udp_priv)
 		udp_stream_ops->release(udp_stream_priv, entry);
 }
@@ -666,22 +679,22 @@ out_send_response:
 	iiod_io_send_response_code(io, ret);
 }
 
-/* The buffer was just enabled: start its UDP stream, if it was set up */
+/* The buffer was just enabled: start its UDP stream if a setup is pending.
+ * The setup is used up whatever start() returns. */
 static int udp_stream_start(struct buffer_entry *entry)
 {
-	if (!udp_stream_ops || !entry->udp_setup)
+	int ret;
+
+	if (!udp_stream_ops || !entry->udp_setup || entry->udp_active)
 		return 0;
 
-	return udp_stream_ops->start(udp_stream_priv, entry);
-}
-
-/* The buffer is about to be disabled: stop its UDP stream, forget the setup */
-static void udp_stream_stop(struct buffer_entry *entry)
-{
-	if (udp_stream_ops && entry->udp_setup)
-		udp_stream_ops->stop(udp_stream_priv, entry);
-
 	entry->udp_setup = false;
+
+	ret = udp_stream_ops->start(udp_stream_priv, entry);
+	if (!ret)
+		entry->udp_active = true;
+
+	return ret;
 }
 
 static void handle_set_enabled_buffer(struct parser_pdata *pdata, const struct iiod_command *cmd,
@@ -762,6 +775,12 @@ static void handle_udp_stream_setup(struct parser_pdata *pdata, const struct iio
 	if (iio_err(entry)) {
 		/* No such device, or the buffer is not open */
 		ret = -EINVAL;
+		goto out_send_response;
+	}
+
+	/* A running stream must be stopped (disabled) before a new setup */
+	if (entry->udp_active) {
+		ret = -EBUSY;
 		goto out_send_response;
 	}
 

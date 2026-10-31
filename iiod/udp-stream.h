@@ -19,33 +19,42 @@
 struct buffer_entry;
 
 /*
- * Each is called from the thread serving the connection that sent the
- * command; for release(), that is the one that sent CLOSE_BUFFER, usually the
- * context's connection rather than the buffer's. On connection teardown,
- * release() runs with the buffer list locked: it must not call back into the
- * responder.
+ * All four callbacks are mandatory. The responder calls them as follows,
+ * keeping two flags per buffer: a pending setup (succeeded, not yet used by an
+ * enable) and an active stream (start() succeeded, stop() not yet called).
+ *
+ * - SETUP: answered -EBUSY while a stream is active. Otherwise setup() runs,
+ *   and a success makes the setup pending. A setup may be repeated before the
+ *   enable; if a later one fails, the earlier success stays pending.
+ * - ENABLE: once the buffer is enabled, a pending setup is used up and
+ *   start() runs; its success makes the stream active. Without a new setup,
+ *   a later ENABLE starts nothing, and start() never runs while active.
+ * - DISABLE: stop() runs first if a stream is active; any pending setup is
+ *   dropped.
+ * - CLOSE_BUFFER, or loss of the connection: stop() if a stream is active,
+ *   then release() if entry->udp_priv is set.
+ *
+ * Each runs on the thread serving the connection that sent the command: for
+ * CLOSE_BUFFER, that is usually the context's connection, not the buffer's.
+ * On connection teardown, stop() and release() run with the buffer list
+ * locked and must not call back into the responder.
  */
 struct iiod_udp_stream_ops {
-	/* IIOD_OP_UDP_STREAM_SETUP on an open buffer. Check <req>, set the stream
-	 * up and fill <resp> (zeroed on entry). Returns 0 or a negative error
-	 * code, which is what the client gets. It may come again before the
-	 * buffer is enabled; if a later one fails, the earlier success still
-	 * counts and start() follows the enable. */
+	/* Check <req>, set the stream up and fill <resp> (zeroed on entry).
+	 * Returns 0 or a negative error code, which is what the client gets. */
 	int (*setup)(void *priv, struct buffer_entry *entry, const struct iiod_udp_stream_req *req,
 			struct iiod_udp_stream_resp *resp);
 
-	/* The buffer was just enabled, and a setup succeeded since it was last
-	 * disabled: start sending. A negative return fails the enable; the buffer
-	 * stays enabled and stop() follows when it is disabled. */
+	/* Start sending. A negative return fails the enable, which leaves the
+	 * buffer enabled but no stream active: start() must clean up after itself,
+	 * as stop() will not be called, and the client must send a new setup
+	 * before the next enable. */
 	int (*start)(void *priv, struct buffer_entry *entry);
 
-	/* The buffer is about to be disabled, and a setup succeeded since it was
-	 * last disabled: stop sending. Also called when start() failed or never
-	 * ran. The setup is forgotten afterwards. */
+	/* Stop sending. */
 	void (*stop)(void *priv, struct buffer_entry *entry);
 
-	/* The buffer is closed, or its connection is gone, and entry->udp_priv is
-	 * set: stop sending if still running, and free entry->udp_priv. */
+	/* Free entry->udp_priv. The stream, if any, is already stopped. */
 	void (*release)(void *priv, struct buffer_entry *entry);
 };
 
