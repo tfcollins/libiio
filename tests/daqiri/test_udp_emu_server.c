@@ -11,12 +11,16 @@
  * and dropped. Needs neither DAQIRI nor the daqiri: module.
  *
  * Usage: test_udp_emu_server <sample.bin> <oracle.json>
+ *        test_udp_emu_server <sample.bin> <oracle.json> --count
  *        test_udp_emu_server <sample.bin> --prompt-stop
  *
  * Run through with_emu.sh, the emulator serving fmcomms2.xml with
  *   --udp --udp-from 127.0.0.1:25102 --udp-pps 2000 --udp-drop-every 10
  *   --udp-json <oracle.json>
- * or, for --prompt-stop, with --udp --udp-pps 1: then the test only checks
+ * With --count, the emulator also has --udp-count 100: the stream of the one
+ * enable must end by itself after the numbers 0 to 99, the dropped ones
+ * included, with the oracle written then and the same after the disable.
+ * Or, for --prompt-stop, with --udp --udp-pps 1: then the test only checks
  * that a stream sleeping between two datagrams stops at once on DISABLE,
  * CLOSE_BUFFER and loss of the connection.
  */
@@ -48,6 +52,7 @@
 #define MAX_PAYLOAD 1472     /* 1500-byte MTU less the IPv4 and UDP headers */
 
 #define MIN_DATAGRAMS 64
+#define COUNT 100 /* --udp-count, with --count */
 #define RECV_TIMEOUT_MS 5000
 /* After a disable, the stream is over once nothing came for this long */
 #define IDLE_MS 300
@@ -446,6 +451,54 @@ static void stream(struct emu_client *ec, struct iiod_client_buffer_pdata *buf, 
 	TEST_ASSERT_EQ(rx.count + rx.bad, 0, "nothing sent after close");
 }
 
+/* --udp-count 100: the stream ends by itself, and the oracle is written then */
+static void count_stream(struct iiod_client_buffer_pdata *buf, int udp, const struct sample_file *f,
+		const char *oracle)
+{
+	static struct rx rx;
+	struct iiod_udp_stream_resp resp;
+	struct iio_block_pdata *block;
+	struct oracle o1, o2;
+	void *data;
+	int ret;
+
+	ret = setup(buf, LOOPBACK, DST_PORT, MAX_PAYLOAD, &resp);
+	TEST_ASSERT_EQ(ret, 0, "setup");
+	if (ret)
+		return;
+
+	block = iiod_client_create_block(buf, resp.payload_bytes, &data);
+	ret = iio_err(block);
+	TEST_ASSERT_EQ(ret, 0, "block of payload_bytes created");
+	if (ret)
+		return;
+
+	ret = iiod_client_enable_buffer(buf, 0, true, false);
+	TEST_ASSERT_EQ(ret, 0, "enable");
+
+	/* Until nothing came for IDLE_MS: the end, with no disable */
+	rx_reset(&rx, &resp);
+	receive(udp, &rx, f, 0, RECV_TIMEOUT_MS);
+	TEST_ASSERT_EQ(rx.bad, 0, "every datagram valid");
+
+	ret = read_oracle(oracle, &o1);
+	TEST_ASSERT_EQ(ret, 0, "oracle written when the count was reached, before any disable");
+	if (!ret)
+		TEST_ASSERT_EQ(o1.sent + o1.dropped - o1.duplicated, COUNT,
+				"oracle: the numbers 0 to 99, sent or dropped");
+	/* --udp-drop-every 10 dropped 9, 19, ..., 99: the last one too */
+	check_oracle(oracle, &rx);
+
+	ret = iiod_client_enable_buffer(buf, 0, false, false);
+	TEST_ASSERT_EQ(ret, 0, "disable");
+	ret = read_oracle(oracle, &o2);
+	TEST_ASSERT_EQ(ret, 0, "oracle written at the disable");
+	TEST_ASSERT(!ret && !memcmp(&o1, &o2, sizeof(o1)), "and the same: nothing sent since");
+
+	iiod_client_free_block(block);
+	iiod_client_close_buffer(buf);
+}
+
 /* Enable a stream paced at one datagram per second and wait for its first
  * datagram: the sender then sleeps for a second before the next one */
 static struct iio_block_pdata *start_slow(struct iiod_client_buffer_pdata *buf, int udp,
@@ -562,14 +615,15 @@ int main(int argc, char **argv)
 	struct emu_client ec;
 	struct sample_file f;
 	const char *value;
-	bool slow;
+	bool slow, count;
 	int ret, udp = -1;
 
-	if (argc != 3) {
-		printf("Usage: %s <sample.bin> <oracle.json> | --prompt-stop\n", argv[0]);
+	if (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "--count"))) {
+		printf("Usage: %s <sample.bin> <oracle.json> [--count] | --prompt-stop\n", argv[0]);
 		return 2;
 	}
 	slow = !strcmp(argv[2], "--prompt-stop");
+	count = argc == 4;
 
 	ret = read_file(argv[1], &f);
 	if (ret || !f.len) {
@@ -619,7 +673,9 @@ int main(int argc, char **argv)
 	buf = iiod_client_open_buffer(ec.client, ec.client, dev, 0, mask);
 	ret = iio_err(buf);
 	TEST_ASSERT_EQ(ret, 0, "buffer opened");
-	if (!ret)
+	if (!ret && count)
+		count_stream(buf, udp, &f, argv[2]);
+	else if (!ret)
 		stream(&ec, buf, udp, &f, argv[2]);
 
 out_close:
@@ -631,7 +687,10 @@ out_close:
 out_free:
 	free(f.data);
 
-	printf("test_udp_emu_server%s: %d/%d passed, %d failed\n", slow ? " --prompt-stop" : "",
+	printf("test_udp_emu_server%s: %d/%d passed, %d failed\n",
+			slow	? " --prompt-stop"
+			: count ? " --count"
+				: "",
 			test_passed, test_count, test_failed);
 
 	return test_failed ? 1 : 0;

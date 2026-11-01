@@ -335,6 +335,17 @@ if (WITH_IIOD_EMU
                 $<TARGET_FILE:test_udp_emu_server>
                 ${XMLS}/cf-ad9361-lpc_buf0.bin ${UDP_ORACLE})
 
+        # --udp-count: the stream ends by itself, the oracle written then
+        set(UDP_COUNT_ORACLE ${CMAKE_CURRENT_BINARY_DIR}/udp_emu_count.json)
+        add_test(
+            NAME daqiri_udp_emu_count
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args --udp
+                --udp-pps 2000 --udp-drop-every 10 --udp-count 100 --udp-json
+                ${UDP_COUNT_ORACLE} -- ${XMLS}/fmcomms2.xml
+                $<TARGET_FILE:test_udp_emu_server>
+                ${XMLS}/cf-ad9361-lpc_buf0.bin ${UDP_COUNT_ORACLE} --count)
+
         # One datagram per second: DISABLE, CLOSE_BUFFER and a lost
         # connection must not wait for the next one.
         add_test(
@@ -346,7 +357,8 @@ if (WITH_IIOD_EMU
                 ${XMLS}/cf-ad9361-lpc_buf0.bin --prompt-stop)
 
         set_tests_properties(
-            daqiri_udp_emu_server daqiri_udp_emu_prompt_stop
+            daqiri_udp_emu_server daqiri_udp_emu_count
+            daqiri_udp_emu_prompt_stop
             PROPERTIES LABELS
                        daqiri-emu
                        ENVIRONMENT

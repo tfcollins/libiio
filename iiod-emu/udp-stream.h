@@ -30,6 +30,7 @@ enum emu_udp_option {
 	EMU_UDP_OPT_REORDER_WINDOW,
 	EMU_UDP_OPT_DUP_EVERY,
 	EMU_UDP_OPT_JSON,
+	EMU_UDP_OPT_COUNT,
 	/* Hidden: the logging provider of the responder's contract test */
 	EMU_UDP_OPT_MOCK_PROVIDER,
 	EMU_UDP_OPT_END,
@@ -48,6 +49,7 @@ struct emu_udp_cfg {
 	uint64_t seed;
 	uint64_t reorder_window; /* 0: off */
 	uint64_t dup_every;
+	uint64_t count; /* sequence numbers per enable; 0: no end */
 	const char *json;
 	const char *mock_log; /* --udp-mock-provider */
 };

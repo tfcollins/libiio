@@ -123,6 +123,7 @@ static const struct option options[] = {
 	{ "udp-reorder-window", required_argument, NULL, EMU_UDP_OPT_REORDER_WINDOW },
 	{ "udp-dup-every", required_argument, NULL, EMU_UDP_OPT_DUP_EVERY },
 	{ "udp-json", required_argument, NULL, EMU_UDP_OPT_JSON },
+	{ "udp-count", required_argument, NULL, EMU_UDP_OPT_COUNT },
 	{ "udp-mock-provider", required_argument, NULL, EMU_UDP_OPT_MOCK_PROVIDER },
 #endif
 	{ NULL, 0, NULL, 0 },

@@ -7,6 +7,9 @@
  * not, with drops, reordering and duplicates injected on demand, and writes
  * what it did as a JSON oracle. The injection rules are those of the VITA 49.2
  * test sender that the daqiri: backend's tests used before UDP sample mode.
+ * With --udp-count the stream of an enable ends by itself after that many
+ * sequence numbers, dropped ones included, which makes the oracle exact
+ * whenever the client looks at it.
  *
  * Copyright (C) 2026 Analog Devices, Inc.
  */
@@ -68,6 +71,7 @@ struct emu_udp_gen {
 	struct emu_udp_pending pend[4];
 	unsigned int nb_pend, pos;
 	uint64_t dropped, reordered, duplicated;
+	bool done; /* --udp-count sequence numbers used up */
 };
 
 struct emu_udp {
@@ -268,6 +272,8 @@ int emu_udp_parse_option(struct emu_udp_cfg *cfg, int opt, const char *arg)
 	case EMU_UDP_OPT_JSON:
 		cfg->json = arg;
 		return 0;
+	case EMU_UDP_OPT_COUNT:
+		return parse_u64("--udp-count", arg, 1, UINT64_MAX, &cfg->count);
 	case EMU_UDP_OPT_MOCK_PROVIDER:
 		cfg->mock_log = arg;
 		return 0;
@@ -297,9 +303,13 @@ void emu_udp_usage(void)
 	       "\t\t\t\tFor every m >= 1, send datagram mk just before\n"
 	       "\t\t\t\tmk-1, unless one of them is dropped\n"
 	       "\t--udp-dup-every <n>\tSend datagrams n-1, 2n-1, ... twice in a row\n"
-	       "\t--udp-json <file>\tOn every disable, write there how many datagrams\n"
-	       "\t\t\t\tthe last enable sent (copies included), dropped,\n"
-	       "\t\t\t\treordered (pairs) and duplicated\n"
+	       "\t--udp-count <n>\t\tEnd the stream of an enable after <n> datagram\n"
+	       "\t\t\t\tnumbers, dropped ones included; no pair is reordered\n"
+	       "\t\t\t\tacross the end\n"
+	       "\t--udp-json <file>\tOn every disable, and when --udp-count ends a\n"
+	       "\t\t\t\tstream, write there how many datagrams the last\n"
+	       "\t\t\t\tenable sent (copies included), dropped, reordered\n"
+	       "\t\t\t\t(pairs) and duplicated\n"
 	       "Datagrams are numbered from 0 at every enable. A dropped one keeps its\n"
 	       "number, so that the client can tell it is missing.\n",
 			DEFAULT_FROM);
@@ -599,7 +609,8 @@ static void emu_udp_gen_push(const struct emu_udp_cfg *cfg, struct emu_udp_gen *
 }
 
 /* Queue the next datagram, or reordered pair, to send. Returns false if all
- * the SCAN_MAX sequence numbers it looked at were dropped. */
+ * the SCAN_MAX sequence numbers it looked at were dropped, or once the
+ * --udp-count ones are used up (g->done). */
 static bool emu_udp_gen_refill(const struct emu_udp_cfg *cfg, struct emu_udp_gen *g)
 {
 	uint64_t seq, k = cfg->reorder_window;
@@ -609,13 +620,20 @@ static bool emu_udp_gen_refill(const struct emu_udp_cfg *cfg, struct emu_udp_gen
 	g->pos = 0;
 
 	for (n = 0; n < SCAN_MAX; n++) {
+		if (cfg->count && g->next >= cfg->count) {
+			g->done = true;
+			return false;
+		}
+
 		seq = g->next++;
 		if (emu_udp_dropped(cfg, seq)) {
 			g->dropped++;
 			continue;
 		}
 
-		if (k && seq % k == k - 1 && !emu_udp_dropped(cfg, seq + 1)) {
+		/* A pair needs both numbers within the count */
+		if (k && seq % k == k - 1 && (!cfg->count || seq + 1 < cfg->count) &&
+				!emu_udp_dropped(cfg, seq + 1)) {
 			g->next++;
 			emu_udp_gen_push(cfg, g, seq + 1, TAG_NONE);
 			emu_udp_gen_push(cfg, g, seq, TAG_LATE);
@@ -763,6 +781,8 @@ static int emu_udp_send(struct emu_udp_buf *ub, unsigned int nb)
 	return 0;
 }
 
+static void emu_udp_write_oracle(struct emu_udp *udp, const struct emu_udp_buf *ub);
+
 static int emu_udp_sender(void *d)
 {
 	struct emu_udp_buf *ub = d;
@@ -796,8 +816,20 @@ static int emu_udp_sender(void *d)
 
 		if (nb)
 			err = emu_udp_send(ub, nb);
+		else if (g->done)
+			break;
 		else
 			emu_udp_nap(waiting ? &due : NULL);
+	}
+
+	/* --udp-count reached: the oracle is final, until the next enable */
+	if (!err && g->done) {
+		printf("UDP stream %08" PRIx32 " done after %" PRIu64 " datagram numbers: %" PRIu64
+		       " sent, %" PRIu64 " dropped, %" PRIu64 " reordered, %" PRIu64
+		       " duplicated\n",
+				ub->stream_id, cfg->count, ub->sent, g->dropped, g->reordered,
+				g->duplicated);
+		emu_udp_write_oracle(ub->udp, ub);
 	}
 
 	/* Finish a reordered pair or a duplicate already begun, so that what
