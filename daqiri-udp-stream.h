@@ -34,6 +34,9 @@
  * A skipped datagram changes no sequence state: when it was the expected
  * one, the next accepted datagram reports it as lost.
  * The flags byte is reserved and not checked.
+ *
+ * It also decides when the drain after DISABLE_BUFFER is over
+ * (dq_udp_drain_over()).
  */
 
 #ifndef DAQIRI_UDP_STREAM_H
@@ -107,6 +110,22 @@ int dq_udp_rx_header(struct dq_udp_rx *rx, const uint8_t *hdr, size_t hdr_len, s
 /* One datagram of len bytes at dgram: dq_udp_rx_header(rx, dgram, len, len, out) */
 int dq_udp_rx_datagram(
 		struct dq_udp_rx *rx, const uint8_t *dgram, size_t len, struct dq_udp_data *out);
+
+/* After DISABLE_BUFFER the poller still receives what is on its way: until
+ * the queue has delivered nothing for this long, */
+#define DQ_UDP_DRAIN_IDLE_MS 20
+/* or this long after the answer at most */
+#define DQ_UDP_DRAIN_MAX_MS 500
+
+/*
+ * Whether the drain is over at <now>, the answer to DISABLE_BUFFER having
+ * come at <start> (no later than <now>) and the queue's last burst at <last>
+ * (0: none yet), all in nanoseconds of one monotonic clock: once the queue
+ * has been quiet for DQ_UDP_DRAIN_IDLE_MS since the later of <start> and
+ * <last>, or DQ_UDP_DRAIN_MAX_MS after <start> whatever comes. A <last> later
+ * than <now>, a burst stored after the clock was read, is not quiet.
+ */
+bool dq_udp_drain_over(uint64_t start, uint64_t last, uint64_t now);
 
 #ifdef __cplusplus
 }

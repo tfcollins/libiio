@@ -4,8 +4,8 @@
  *
  * Copyright (C) 2026 Analog Devices, Inc.
  *
- * Receive side of UDP sample mode: datagram header checks and the 64-bit
- * sequence tracker; see daqiri-udp-stream.h.
+ * Receive side of UDP sample mode: datagram header checks, the 64-bit
+ * sequence tracker and the end of the drain; see daqiri-udp-stream.h.
  */
 
 #include <string.h>
@@ -103,4 +103,17 @@ int dq_udp_rx_datagram(
 		struct dq_udp_rx *rx, const uint8_t *dgram, size_t len, struct dq_udp_data *out)
 {
 	return dq_udp_rx_header(rx, dgram, len, len, out);
+}
+
+bool dq_udp_drain_over(uint64_t start, uint64_t last, uint64_t now)
+{
+	const uint64_t idle = DQ_UDP_DRAIN_IDLE_MS * 1000000ULL;
+	const uint64_t cap = DQ_UDP_DRAIN_MAX_MS * 1000000ULL;
+	uint64_t quiet_from = last > start ? last : start;
+
+	if (now - start >= cap)
+		return true;
+
+	/* A burst later than now is news, not a wrapped quiet time */
+	return now >= quiet_from && now - quiet_from >= idle;
 }

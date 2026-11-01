@@ -34,6 +34,7 @@ in the `unit-no-daqiri` job of `daqiri.yml`.
 | `test_udp_header` | datagram header checks against the `udp-*.bin` golden vectors: version, stream ID, lengths, a header cut short |
 | `test_udp_seq` | the 64-bit sequence tracker: in order, gaps (1, 1000, over 1024: resync), late datagrams taking a loss back, duplicates, foreign and malformed datagrams, the restart at 0 of a new stream |
 | `test_udp_hds_split` | datagrams cut in two by header-data split, at every interesting boundary |
+| `test_udp_drain` | the end of the drain after DISABLE (`dq_udp_drain_over()`), on made-up times: 20 ms quiet since the answer or the last burst, whichever came later, 500 ms at most, and a burst stored after the clock was read, which is not quiet |
 | `test_asm` | the block assembler: boundaries, payloads straddling blocks, zero-fill |
 | `test_l2_parse` | the Ethernet/802.1Q/IPv4/UDP parser of raw queues: the `l2-*.bin` golden vectors and every prefix of a valid frame |
 | `test_udp_stream_codec` | the setup command's request and response tails and the datagram header (`iiod-udp-stream.h`), network order |

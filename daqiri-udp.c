@@ -127,12 +127,6 @@
 /* IPv4 and UDP headers: what the IP MTU does not leave to the datagram */
 #define DQ_UDP_IP_UDP_HDR 28
 
-/* After DISABLE_BUFFER the poller still receives what is on its way: until
- * the queue has delivered nothing for this long, */
-#define DQ_UDP_DRAIN_IDLE_MS 20
-/* or this long after the answer at most */
-#define DQ_UDP_DRAIN_MAX_MS 500
-
 /* A DISABLE_BUFFER that failed is tried once more, this much later */
 #define DQ_UDP_DISABLE_RETRY_MS 100
 
@@ -1134,15 +1128,14 @@ err_drop_setup:
  * burst, whichever came later, but not past DQ_UDP_DRAIN_MAX_MS */
 static void dq_udp_drain(struct dq_udp_buffer *v)
 {
-	const unsigned long long idle = DQ_UDP_DRAIN_IDLE_MS * 1000000ULL;
-	const unsigned long long cap = DQ_UDP_DRAIN_MAX_MS * 1000000ULL;
-	unsigned long long start = dq_now_ns(), now, last, quiet_from;
+	unsigned long long start = dq_now_ns(), now, last;
 
 	for (;;) {
-		now = dq_now_ns();
+		/* The burst time first, the clock then: a burst stored in
+		 * between is no later than now */
 		last = atomic_load(&v->rx_ns);
-		quiet_from = last > start ? last : start;
-		if (now - quiet_from >= idle || now - start >= cap)
+		now = dq_now_ns();
+		if (dq_udp_drain_over(start, last, now))
 			return;
 
 		dq_sleep_ms(1);

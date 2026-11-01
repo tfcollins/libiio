@@ -457,10 +457,11 @@ endif ()
 # test_udp_hds_split and test_l2_parse read the golden vectors.
 if (WITH_TESTS AND NOT WIN32)
     # The UDP sample mode receive side (datagram header checks, the 64-bit
-    # sequence tracker, datagrams cut in two by header-data split), the block
-    # assembler and the Ethernet/IPv4/UDP parser of raw queues.
-    foreach (_test test_udp_header test_udp_seq test_udp_hds_split test_asm
-                   test_l2_parse)
+    # sequence tracker, datagrams cut in two by header-data split, the end of
+    # the drain after DISABLE), the block assembler and the Ethernet/IPv4/UDP
+    # parser of raw queues.
+    foreach (_test test_udp_header test_udp_seq test_udp_hds_split
+                   test_udp_drain test_asm test_l2_parse)
         add_executable(${_test} ${_test}.c)
         target_link_libraries(${_test} PRIVATE iio_daqiri_framing)
         target_include_directories(${_test}
