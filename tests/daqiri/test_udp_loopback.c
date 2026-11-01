@@ -38,7 +38,12 @@
  * - a gap fails one block with lossy=0 and zero-fills one block per lost
  *   datagram with lossy=1, exactly.
  * The emulator is paced (--udp-pps) in every case: unpaced on loopback, a
- * stop that meets a full socket can leave a batch partly unsent.
+ * stop that meets a full socket can leave a batch partly unsent. 250
+ * datagrams per second leave the engine's receive thread some 50 ms of
+ * delay before its socket fills (a dozen 9216-byte datagrams in the default
+ * 208 KiB) and the kernel drops one (Udp RcvbufErrors in /proc/net/snmp,
+ * which a failing case reports): at 1000 per second, a host with every core
+ * busy did drop some.
  */
 
 #include <errno.h>
@@ -123,6 +128,7 @@ struct lb {
 	unsigned int next; /* the block to dequeue next: the queue is in order */
 	long recs[MAX_RECS];
 	unsigned int nb_recs;
+	long long rcvbuf_errors; /* the kernel's count when the case started */
 };
 
 static const char *yaml, *oracle_path;
@@ -340,6 +346,50 @@ static void streams_read(struct streams *st)
 	fclose(f);
 }
 
+/* UDP datagrams the kernel dropped for a full receive buffer, system-wide:
+ * the RcvbufErrors column of the Udp lines of /proc/net/snmp, or -1 */
+static long long udp_rcvbuf_errors(void)
+{
+	char head[1024], vals[1024], *hs = NULL, *vs = NULL, *h, *v;
+	long long ret = -1;
+	FILE *f;
+
+	f = fopen("/proc/net/snmp", "r");
+	if (!f)
+		return -1;
+
+	while (fgets(head, sizeof(head), f)) {
+		if (strncmp(head, "Udp: ", 5) || !strstr(head, "RcvbufErrors"))
+			continue;
+		if (!fgets(vals, sizeof(vals), f))
+			break;
+
+		h = strtok_r(head, " \n", &hs);
+		v = strtok_r(vals, " \n", &vs);
+		while (h && v && strcmp(h, "RcvbufErrors")) {
+			h = strtok_r(NULL, " \n", &hs);
+			v = strtok_r(NULL, " \n", &vs);
+		}
+		if (h && v)
+			ret = strtoll(v, NULL, 10);
+		break;
+	}
+	fclose(f);
+
+	return ret;
+}
+
+/* Say what the kernel dropped meanwhile when datagrams sent did not arrive */
+static void missed(long long missing, unsigned long long sent)
+{
+	long long now = udp_rcvbuf_errors();
+
+	printf("  %lld of %llu datagrams sent did not reach the backend; the kernel dropped %lld "
+	       "UDP datagrams for a full receive buffer meanwhile (RcvbufErrors, system-wide)\n",
+			missing, sent,
+			now >= 0 && lb.rcvbuf_errors >= 0 ? now - lb.rcvbuf_errors : -1LL);
+}
+
 static long long attr_ll(const char *name)
 {
 	const struct iio_attr *attr = iio_buffer_find_attr(lb.buf, name);
@@ -486,6 +536,7 @@ static int lb_start(bool lossy, unsigned int queued)
 	remove(oracle_path);
 
 	ret = lb_open(lossy ? ",lossy=1" : "");
+	lb.rcvbuf_errors = udp_rcvbuf_errors();
 	if (!ret)
 		ret = lb_enqueue(0, queued);
 	if (!ret)
@@ -736,8 +787,7 @@ static void check_counters(const struct oracle *o, const struct expect *e)
 	CHECK_EQ(arrived(&c), o->sent,
 			"every datagram sent arrived: rx_packets + late + duplicates");
 	if (arrived(&c) != (long long)o->sent)
-		printf("  the drain after the disable missed %lld of %llu datagrams\n",
-				(long long)o->sent - arrived(&c), o->sent);
+		missed((long long)o->sent - arrived(&c), o->sent);
 
 	CHECK_EQ(c.duplicates, o->duplicated, "duplicate_packets == oracle duplicated");
 	CHECK_EQ(c.late, o->reordered, "late_packets == oracle reordered");
@@ -949,6 +999,8 @@ static void slow_consumer_case(bool lossy)
 
 	counters_read(&c);
 	CHECK_EQ(arrived(&c), o.sent, "every datagram sent arrived");
+	if (arrived(&c) != (long long)o.sent)
+		missed((long long)o.sent - arrived(&c), o.sent);
 	CHECK_EQ(c.packets, o.sent, "rx_packets: none lost, late or duplicate");
 	CHECK_EQ(c.lost, 0, "lost_packets: nothing lost on the wire");
 	CHECK_EQ(c.gaps, 0, "gap_events: no sequence gap");
@@ -1025,6 +1077,9 @@ TEST_FUNCTION(burst_gap)
 	CHECK_EQ(ok, lb.nb_recs, "each burst: datagrams 0, 1, 2, ... in order");
 
 	counters_read(&c);
+	CHECK_EQ(arrived(&c), o1.sent + o2.sent, "every datagram sent arrived");
+	if (arrived(&c) != (long long)(o1.sent + o2.sent))
+		missed((long long)(o1.sent + o2.sent) - arrived(&c), o1.sent + o2.sent);
 	CHECK_EQ(c.packets, o1.sent + o2.sent, "rx_packets: both bursts");
 	CHECK_EQ(c.lost, 0, "lost_packets: the sequence restart is no gap");
 	CHECK_EQ(c.gaps, 0, "gap_events");
@@ -1042,15 +1097,15 @@ struct lb_case {
 };
 
 static const struct lb_case cases[] = {
-	{ "clean", test_clean, { "--udp-pps", "1000" } },
-	{ "drop_list", test_drop_list, { "--udp-pps", "1000", "--udp-drop-list", "5,6,20" } },
+	{ "clean", test_clean, { "--udp-pps", "250" } },
+	{ "drop_list", test_drop_list, { "--udp-pps", "250", "--udp-drop-list", "5,6,20" } },
 	{ "drop_list_lossy", test_drop_list_lossy,
-			{ "--udp-pps", "1000", "--udp-drop-list", "5,6,20" } },
-	{ "reorder", test_reorder, { "--udp-pps", "1000", "--udp-reorder-window", "3" } },
-	{ "duplicate", test_duplicate, { "--udp-pps", "1000", "--udp-dup-every", "8" } },
+			{ "--udp-pps", "250", "--udp-drop-list", "5,6,20" } },
+	{ "reorder", test_reorder, { "--udp-pps", "250", "--udp-reorder-window", "3" } },
+	{ "duplicate", test_duplicate, { "--udp-pps", "250", "--udp-dup-every", "8" } },
 	{ "slow_consumer", test_slow_consumer, { "--udp-pps", "100" } },
 	{ "slow_consumer_lossy", test_slow_consumer_lossy, { "--udp-pps", "100" } },
-	{ "burst_gap", test_burst_gap, { "--udp-pps", "1000" } },
+	{ "burst_gap", test_burst_gap, { "--udp-pps", "250" } },
 };
 
 #define NB_CASES (sizeof(cases) / sizeof(cases[0]))

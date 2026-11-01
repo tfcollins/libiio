@@ -192,7 +192,7 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
             NAME daqiri_udp_equivalence
             COMMAND
                 ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args --udp
-                --udp-pps 1000 -- ${XMLS}/fmcomms2.xml
+                --udp-pps 250 -- ${XMLS}/fmcomms2.xml
                 $<TARGET_FILE:test_udp_equivalence>
                 ${XMLS}/cf-ad9361-lpc_buf0.bin)
         set_tests_properties(
