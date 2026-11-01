@@ -128,6 +128,7 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                 --udp-from 127.0.0.1:25109 -- ${XMLS}/fmcomms2.xml
                 $<TARGET_FILE:test_daqiri_lifecycle> --wrong-source)
 
+        # IIO_DAQIRI_YAML is cleared: some cases expect no YAML.
         set_tests_properties(
             daqiri_lifecycle daqiri_lifecycle_mixed
             daqiri_lifecycle_wrong_source
@@ -135,9 +136,14 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                 LABELS
                 daqiri-loopback
                 ENVIRONMENT
-                "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml"
+                "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml;IIO_DAQIRI_YAML="
                 RESOURCE_LOCK
                 "iiod-emu-30431;daqiri-udp-25101")
+        # The decision table and the refused enable read the mock's calls
+        set_property(
+            TEST daqiri_lifecycle
+            APPEND
+            PROPERTY ENVIRONMENT "DAQIRI_MOCK_LOG=${LIFECYCLE_LOG}")
     endif ()
 
     # UDP sample mode end to end, the backend against iiod-emu --udp as the

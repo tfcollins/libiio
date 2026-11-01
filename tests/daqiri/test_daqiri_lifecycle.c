@@ -29,6 +29,13 @@
  * exit_with_open_buffer runs before (a), while this process has no engine:
  * forked children start one each and exit with a buffer streaming.
  *
+ * The last cases read the mock's log (DAQIRI_MOCK_LOG) to see which calls a
+ * case made: rows of the decision table against a server that advertises UDP
+ * sample mode (data=udp without a YAML fails with -EINVAL, data=auto without a
+ * YAML streams over TCP, neither sending a setup), and a setup refused at
+ * enable, which fails the enable with the server's error and no fallback,
+ * after a DISABLE that drops the probe's pending setup.
+ *
  * With --mixed (served float_scan_elements.xml), only the channel layout is
  * checked: UDP sample mode takes the device's own layout, so 16- and 32-bit
  * channels open in one buffer. With --wrong-source (served by iiod-emu --udp
@@ -76,6 +83,8 @@
 	} while (0)
 
 static const char *yaml;
+/* DAQIRI_MOCK_LOG: the log of the mock provider, one line per call */
+static const char *mock_log;
 
 struct rx {
 	struct iio_context *ctx;
@@ -89,20 +98,26 @@ struct rx {
 /* (a)-(c) share this one */
 static struct rx shared;
 
-/* <extra>: more URI options, "" or ",key=value..." */
-static struct iio_context *ctx_opts(const char *path, const char *extra)
+static struct iio_context *ctx_uri(const char *uri)
 {
-	struct iio_context *ctx;
-	char uri[4300];
+	struct iio_context *ctx = iio_create_context(NULL, uri);
 
-	snprintf(uri, sizeof(uri), "daqiri:127.0.0.1,data=udp,yaml=%s%s", path, extra);
-	ctx = iio_create_context(NULL, uri);
 	if (iio_err(ctx)) {
 		printf("  %s: unable to create context: %d\n", uri, iio_err(ctx));
 		return NULL;
 	}
 
 	return ctx;
+}
+
+/* <extra>: more URI options, "" or ",key=value..." */
+static struct iio_context *ctx_opts(const char *path, const char *extra)
+{
+	char uri[4300];
+
+	snprintf(uri, sizeof(uri), "daqiri:127.0.0.1,data=udp,yaml=%s%s", path, extra);
+
+	return ctx_uri(uri);
 }
 
 static struct iio_context *ctx_for(const char *path)
@@ -933,6 +948,163 @@ out:
 	close(fd);
 }
 
+/* The mock's log from byte <from> on, at most <len> - 1 bytes; the length of
+ * the whole log in <total> */
+static size_t log_read(long from, char *buf, size_t len, long *total)
+{
+	FILE *f = fopen(mock_log, "r");
+	size_t n = 0;
+
+	*total = 0;
+	if (f) {
+		if (!fseek(f, 0, SEEK_END))
+			*total = ftell(f);
+		if (from <= *total && !fseek(f, from, SEEK_SET))
+			n = fread(buf, 1, len - 1, f);
+		fclose(f);
+	}
+	buf[n] = '\0';
+
+	return n;
+}
+
+/* Where the next case's calls will start in the mock's log */
+static long log_mark(void)
+{
+	char buf[1];
+	long total;
+
+	log_read(0, buf, sizeof(buf), &total);
+
+	return total;
+}
+
+/* The mock logged exactly <calls>, one per line, since <mark> */
+static void expect_calls(long mark, const char *calls, const char *what)
+{
+	const struct timespec ms = { .tv_nsec = 1000000 };
+	static char log[4096];
+	unsigned int wait;
+	long total;
+	bool same;
+
+	/* A close answers after release() logged, but allow for a slow disk */
+	for (wait = 0;; wait++) {
+		log_read(mark, log, sizeof(log), &total);
+		same = !strcmp(log, calls);
+		if (same || wait == 1000)
+			break;
+		nanosleep(&ms, NULL);
+	}
+
+	TEST_ASSERT(same, what);
+	if (!same)
+		printf("    provider calls:\n%s    expected:\n%s", log, calls);
+}
+
+/* Decision table, data=udp without a YAML: -EINVAL before the server is asked
+ * anything, though it advertises UDP sample mode */
+TEST_FUNCTION(udp_without_yaml)
+{
+	long mark = log_mark();
+	struct rx rx;
+	int ret;
+
+	ret = rx_init(&rx, ctx_uri("daqiri:127.0.0.1,data=udp"), DEV_NAME, false);
+	CHECK_EQ(ret, 0, "data=udp context without a YAML");
+	if (!ret)
+		CHECK_EQ(rx_open(&rx, 0), -EINVAL, "buffer open: -EINVAL");
+	rx_destroy(&rx);
+
+	expect_calls(mark, "", "no setup sent");
+}
+
+/* Decision table, data=auto without a YAML: TCP, no probe, though the server
+ * advertises UDP sample mode */
+TEST_FUNCTION(auto_without_yaml)
+{
+	long mark = log_mark();
+	struct rx rx;
+	int ret;
+
+	ret = rx_init(&rx, ctx_uri("daqiri:127.0.0.1,data=auto"), DEV_NAME, false);
+	CHECK_EQ(ret, 0, "data=auto context without a YAML");
+	if (ret)
+		goto out;
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_data_path"), "tcp", "TCP, before the open");
+
+	ret = rx_open_size(&rx, 1, 1024);
+	CHECK_EQ(ret, 0, "buffer opens");
+	if (ret)
+		goto out;
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_data_path"), "tcp", "and streams over TCP");
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_engine_kind"), "none", "without the engine");
+
+	CHECK_EQ(enqueue_all(&rx), 0, "TCP block enqueued");
+	CHECK_EQ(iio_buffer_stream_start(rx.stream), 0, "TCP enable");
+	CHECK_EQ(iio_block_dequeue(rx.blocks[0], false), 0, "TCP block received");
+	CHECK_EQ(iio_buffer_stream_stop(rx.stream), 0, "TCP disable");
+out:
+	rx_destroy(&rx);
+
+	expect_calls(mark, "", "no setup sent");
+}
+
+/* The setup of an enable refused: the enable fails with the server's error,
+ * the buffer stays a UDP one, and DISABLE drops the probe's setup that was
+ * still pending, which the next setup shows. The mock refuses the second
+ * setup of 8-byte sample sets, voltage0 to voltage3. */
+TEST_FUNCTION(refused_at_enable)
+{
+	static const char *const more[] = { "voltage2", "voltage3" };
+	struct iio_channel *chn;
+	unsigned int i;
+	struct rx rx;
+	long mark;
+	int ret;
+
+	ret = rx_init(&rx, ctx_opts(yaml, ",data=auto"), DEV_NAME, false);
+	CHECK_EQ(ret, 0, "data=auto context and mask");
+	if (ret)
+		goto out;
+	for (i = 0; i < 2; i++) {
+		chn = iio_device_find_channel(iio_buffer_get_device(rx.buf), more[i], false);
+		TEST_ASSERT_PTR_NOT_NULL(chn, more[i]);
+		if (!chn)
+			goto out;
+		iio_channel_enable(chn, rx.mask);
+	}
+
+	mark = log_mark();
+	ret = rx_open(&rx, 2);
+	CHECK_EQ(ret, 0, "8-byte sample sets: the probe is answered");
+	if (ret)
+		goto out;
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_data_path"), "udp", "a UDP buffer");
+	CHECK_EQ(enqueue_all(&rx), 0, "enqueue both blocks");
+
+	CHECK_EQ(iio_buffer_stream_start(rx.stream), -EBUSY,
+			"enable: the setup refused with -EBUSY, which the enable returns");
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_data_path"), "udp", "no fallback to TCP");
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_stream_id"), "0", "no stream programmed");
+	expect_calls(mark, "setup 9200\nsetup 9200 pending\n",
+			"the probe, then the enable's setup with the probe's still pending");
+
+	mark = log_mark();
+	CHECK_EQ(iio_buffer_stream_start(rx.stream), 0, "enable again: answered");
+	expect_calls(mark, "setup 9200\nstart\n",
+			"nothing pending any more: the failed enable sent DISABLE");
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_stream_id"), "0x12345678",
+			"the stream of the second setup");
+
+	mark = log_mark();
+	CHECK_EQ(iio_buffer_stream_stop(rx.stream), 0, "disable");
+	rx_close(&rx);
+	expect_calls(mark, "stop\nrelease\n", "disable and close");
+out:
+	rx_destroy(&rx);
+}
+
 /* --mixed, against float_scan_elements.xml: float-dev voltage1 is le:F16/16,
  * voltage2 le:f32/32 */
 TEST_FUNCTION(mixed_lengths)
@@ -957,6 +1129,7 @@ int main(int argc, char **argv)
 		printf("DAQIRI_YAML must be the path of socket-udp-loopback.yaml\n");
 		return 1;
 	}
+	mock_log = getenv("DAQIRI_MOCK_LOG");
 
 	if (argc > 1 && !strcmp(argv[1], "--mixed")) {
 		RUN_TEST(mixed_lengths);
@@ -980,6 +1153,14 @@ int main(int argc, char **argv)
 	RUN_TEST(refused_probe_udp);
 	RUN_TEST(data_smoke);
 	RUN_TEST(resync_without_block);
+
+	if (!mock_log || !mock_log[0]) {
+		TEST_ASSERT(false, "DAQIRI_MOCK_LOG names the mock provider's log");
+		goto out;
+	}
+	RUN_TEST(udp_without_yaml);
+	RUN_TEST(auto_without_yaml);
+	RUN_TEST(refused_at_enable);
 out:
 	printf("test_daqiri_lifecycle: %d/%d passed, %d failed\n", test_passed, test_count,
 			test_failed);
