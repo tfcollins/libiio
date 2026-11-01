@@ -637,47 +637,45 @@ static void lb_record(long rec)
 }
 
 /* Dequeue the next block, waiting for it unless <nonblock>, and record what
- * it holds. -EBUSY or -EPERM: the block is still queued, or was not, and
- * nothing is recorded. */
+ * it holds. -EBUSY or -EPERM with <nonblock>: the block is still queued, or
+ * was not, and nothing is recorded. Any other error than -EIO fails the case,
+ * naming the block and the error. */
 static int lb_take(bool nonblock)
 {
 	struct iio_block *b = lb.blocks[lb.next];
+	char msg[64];
 	int ret;
 
 	ret = iio_block_dequeue(b, nonblock);
 	if (nonblock && (ret == -EBUSY || ret == -EPERM))
 		return ret;
 
-	if (ret == -EIO) {
-		lb_record(BLK_EIO);
-	} else if (ret) {
-		printf("  dequeue of block %u: %d\n", lb.nb_recs, ret);
+	if (ret && ret != -EIO) {
+		snprintf(msg, sizeof(msg), "block %u: done or -EIO", lb.nb_recs);
+		CHECK_EQ(ret, 0, msg);
 		lb_record(BLK_ERR);
 		return ret;
-	} else {
-		lb_record(classify(b));
 	}
 
+	lb_record(ret ? BLK_EIO : classify(b));
 	lb.next = (lb.next + 1) % NB_BLOCKS;
 
 	return 0;
 }
 
-/* Dequeue <nb> blocks; false on an error */
+/* Dequeue <nb> blocks; false, failing the case, on an error */
 static bool lb_run(unsigned int nb)
 {
 	unsigned int i;
-	int ret;
+	char msg[64];
 
-	for (i = 0; i < nb; i++) {
-		ret = lb_take(false);
-		if (ret) {
-			printf("  stopped after %u blocks: %d\n", lb.nb_recs, ret);
-			return false;
-		}
-	}
+	for (i = 0; i < nb && !lb_take(false); i++)
+		;
 
-	return true;
+	snprintf(msg, sizeof(msg), "%u blocks dequeued", nb);
+	CHECK_EQ(i, nb, msg);
+
+	return i == nb;
 }
 
 /* No block completed beyond the ones dequeued */
@@ -877,6 +875,7 @@ static long long injection_case(const struct inject *inj, bool lossy, struct ora
 	long long trailing;
 	struct oracle m;
 	unsigned int nb;
+	bool ok;
 	int ret;
 
 	memset(o, 0, sizeof(*o));
@@ -898,10 +897,12 @@ static long long injection_case(const struct inject *inj, bool lossy, struct ora
 	CHECK_EQ(o->reordered, m.reordered, "oracle reordered: as modelled");
 	CHECK_EQ(o->duplicated, m.duplicated, "oracle duplicated: as modelled");
 
-	if (!lb_run(e.nb_blocks) || !wait_arrived(o->sent) || !lb_stop())
+	/* The blocks, also when the stream stopped short: what came */
+	ok = lb_run(e.nb_blocks) && wait_arrived(o->sent) && lb_stop();
+	check_blocks(&e);
+	if (!ok)
 		return -1;
 
-	check_blocks(&e);
 	CHECK_EQ(lb.nb_recs ? lb.recs[lb.nb_recs - 1] : -1, e.last_seq,
 			"the last block holds the last datagram sent");
 
@@ -1096,7 +1097,9 @@ static void slow_consumer_case(bool lossy)
 	CHECK_EQ(attr_ll("daqiri_rx_dropped_no_block"), OVERRUN_COUNT - 2,
 			"datagrams 2 to 11 dropped: no block");
 	CHECK_EQ(attr_ll("daqiri_rx_overrun_events"), 1, "one overrun event, not one per datagram");
-	if (lb_take(true) || lb_take(true))
+	CHECK_EQ(lb_take(true), 0, "block 0 done");
+	CHECK_EQ(lb_take(true), 0, "block 1 done");
+	if (lb.nb_recs != 2)
 		return;
 	CHECK_EQ(lb.recs[0], 0, "block 0: datagram 0");
 	CHECK_EQ(lb.recs[1], 1, "block 1: datagram 1");

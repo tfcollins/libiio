@@ -92,7 +92,9 @@ counts, every datagram sent arrived (`rx_packets` + late + duplicates ==
 `sent`), late == `reordered`, duplicates == `duplicated`, and lost ==
 `dropped` less the drops past the last datagram sent, which the host cannot
 see. A case whose datagrams did not all arrive says how many the kernel
-dropped for a full receive buffer meanwhile.
+dropped for a full receive buffer meanwhile. A dequeue that returns neither
+a block nor `-EIO` (a timeout, say) fails the case, naming the block and the
+error.
 
 `with_emu.sh [--emu-args <arg>... --] <xml> <cmd...>` runs a command against
 an emulator serving `emu:<xml>` (use an absolute path for the XML), with the
