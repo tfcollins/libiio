@@ -11,7 +11,9 @@
  * clock starts when the first block is dequeued: that block is checked but
  * not counted, so the time spent waiting for the sender to start is not part
  * of the rate. Counters (daqiri_* buffer attributes) are read right after the
- * stream started and again at the end; the report holds the difference.
+ * stream started and again at the end; the report holds the difference. The
+ * data path that a daqiri: buffer took (daqiri_data_path, udp or tcp) heads
+ * the report.
  */
 
 #include <errno.h>
@@ -77,7 +79,7 @@ static void print_help(void)
 	       "\t-h, --help\n\t\t\tShow this help and quit.\n"
 	       "\t-V, --version\n\t\t\tDisplay libiio version information.\n"
 	       "\t-u, --uri [arg]\n\t\t\tUse the context at the provided URI.\n"
-	       "\t\t\teg: 'ip:192.168.2.1', 'daqiri:192.168.2.1,framing=vrt,yaml=f.yaml'\n"
+	       "\t\t\teg: 'ip:192.168.2.1', 'daqiri:192.168.2.1,data=udp,yaml=f.yaml'\n"
 	       "\t-a, --auto <arg>\n\t\t\tUse the only context found by a scan.\n"
 	       "\t    --timeout [arg]\n\t\t\tContext timeout in milliseconds.\n"
 	       "\t-d, --device [arg]\n\t\t\tDevice to receive from (required).\n"
@@ -389,6 +391,23 @@ static unsigned int counters_find(const struct iio_buffer *buf, struct counter *
 	return n;
 }
 
+/* The path a daqiri: buffer streams on (daqiri_data_path: udp or tcp), into
+ * <dst>; NULL when the buffer has no such attribute */
+static const char *data_path_read(const struct iio_buffer *buf, char *dst, size_t len)
+{
+	const struct iio_attr *attr = iio_buffer_find_attr(buf, "daqiri_data_path");
+	ssize_t ret;
+
+	if (!attr)
+		return NULL;
+
+	ret = iio_attr_read_raw(attr, dst, len);
+	if (ret <= 0)
+		snprintf(dst, len, "n/a");
+
+	return dst;
+}
+
 /* ---- Output ------------------------------------------------------------ */
 
 static void json_str(FILE *f, const char *s)
@@ -407,6 +426,7 @@ static void json_str(FILE *f, const char *s)
 
 struct result {
 	const char *uri, *device;
+	const char *data_path; /* daqiri_data_path; NULL when the buffer has none */
 	size_t block_bytes;
 	double duration_s;
 	uint64_t bytes, blocks;
@@ -425,6 +445,11 @@ static void write_json(FILE *f, const struct result *r)
 	json_str(f, r->uri);
 	fprintf(f, ",\n  \"device\": ");
 	json_str(f, r->device);
+	fprintf(f, ",\n  \"data_path\": ");
+	if (r->data_path)
+		json_str(f, r->data_path);
+	else
+		fprintf(f, "null");
 	fprintf(f, ",\n  \"block_bytes\": %zu,\n  \"duration_s\": %.6f,\n", r->block_bytes,
 			r->duration_s);
 	fprintf(f, "  \"bytes\": %" PRIu64 ",\n  \"blocks\": %" PRIu64 ",\n", r->bytes, r->blocks);
@@ -453,6 +478,8 @@ static void print_report(const struct result *r)
 
 	printf("uri            %s\n", r->uri);
 	printf("device         %s\n", r->device);
+	if (r->data_path)
+		printf("data_path      %s\n", r->data_path);
 	printf("block_bytes    %zu\n", r->block_bytes);
 	printf("duration_s     %.3f\n", r->duration_s);
 	printf("bytes          %" PRIu64 "\n", r->bytes);
@@ -557,6 +584,8 @@ int main(int argc, char **argv)
 	struct iio_block **blocks = NULL;
 	struct counter counters[MAX_COUNTERS];
 	unsigned int nb_counters = 0;
+	char data_path_buf[16];
+	const char *data_path = NULL;
 	struct cpu_snap *c0 = NULL, *c1 = NULL;
 	struct lat lat = { 0 };
 	struct result res;
@@ -719,6 +748,9 @@ int main(int argc, char **argv)
 		goto err_free_ctx;
 	}
 
+	/* Settled at the open */
+	data_path = data_path_read(buffer, data_path_buf, sizeof(data_path_buf));
+
 	for (i = 0; i < nb_blocks; i++) {
 		blocks[i] = iio_buffer_stream_create_block(stream, block_bytes);
 		ret = iio_err(blocks[i]);
@@ -825,6 +857,7 @@ int main(int argc, char **argv)
 	}
 	res.uri = uri_arg ? uri_arg : "";
 	res.device = dev_arg;
+	res.data_path = data_path;
 	res.block_bytes = block_bytes;
 	res.duration_s = t_last - t_first;
 	res.bytes = bytes;

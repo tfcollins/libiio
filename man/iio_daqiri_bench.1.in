@@ -43,7 +43,7 @@ queues a number of blocks on the first input buffer of a device, starts the
 stream, and dequeues and re-queues them for the requested time, reporting the
 byte and block rates, the dequeue latency, the CPU use and, for
 .B daqiri:
-contexts, the buffer counters.
+contexts, the data path the buffer took and the buffer counters.
 .PP
 It only uses the public libiio API, so the same run works against any backend:
 compare
@@ -107,6 +107,16 @@ joined again from the next block. The default is
 Also write the result to this file as JSON.
 .SH OUTPUT
 The text report holds
+.I data_path
+(for
+.B daqiri:
+contexts: the
+.B daqiri_data_path
+buffer attribute,
+.B udp
+or
+.BR tcp ,
+the data path settled when the buffer was opened),
 .IR bytes ,
 .IR blocks ,
 .IR gbps ,
@@ -122,6 +132,8 @@ The JSON file is an object with
 .IR schema_version " (1),"
 .IR uri ,
 .IR device ,
+.I data_path
+(\fBnull\fR when the buffer has no \fBdaqiri_data_path\fR),
 .IR block_bytes ,
 .IR duration_s ,
 .IR bytes ,
@@ -143,7 +155,7 @@ channels are not found, the buffer cannot be opened, no block arrived, or a
 dequeue failed.
 .SH EXAMPLES
 .nf
-iio_daqiri_bench \-u "daqiri:192.168.2.1,framing=vrt,yaml=/etc/daqiri.yaml" \\
+iio_daqiri_bench \-u "daqiri:192.168.2.1,data=udp,yaml=/etc/daqiri.yaml" \\
     \-d cf\-ad9361\-lpc \-s 1440 \-T 5 \-\-check ramp \-j perf.json
 iio_daqiri_bench \-u ip:192.168.2.1 \-d cf\-ad9361\-lpc \-s 65536 \-T 3
 .fi
