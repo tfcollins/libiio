@@ -32,9 +32,10 @@
  * The last cases read the mock's log (DAQIRI_MOCK_LOG) to see which calls a
  * case made: rows of the decision table against a server that advertises UDP
  * sample mode (data=udp without a YAML fails with -EINVAL, data=auto without a
- * YAML streams over TCP, neither sending a setup), and a setup refused at
- * enable, which fails the enable with the server's error and no fallback,
- * after a DISABLE that drops the probe's pending setup.
+ * YAML streams over TCP, neither sending a setup), a setup refused at enable,
+ * which fails the enable with the server's error and no fallback, after a
+ * DISABLE that drops the probe's pending setup, and the close: a cancel stops
+ * nothing on the server, the close ends the stream, 50 times over.
  *
  * With --mixed (served float_scan_elements.xml), only the channel layout is
  * checked: UDP sample mode takes the device's own layout, so 16- and 32-bit
@@ -1086,8 +1087,9 @@ static long log_mark(void)
 	return total;
 }
 
-/* The mock logged exactly <calls>, one per line, since <mark> */
-static void expect_calls(long mark, const char *calls, const char *what)
+/* Whether the mock logged exactly <calls>, one per line, since <mark>; says
+ * what it logged when not */
+static bool calls_are(long mark, const char *calls)
 {
 	const struct timespec ms = { .tv_nsec = 1000000 };
 	static char log[4096];
@@ -1104,9 +1106,15 @@ static void expect_calls(long mark, const char *calls, const char *what)
 		nanosleep(&ms, NULL);
 	}
 
-	TEST_ASSERT(same, what);
 	if (!same)
 		printf("    provider calls:\n%s    expected:\n%s", log, calls);
+
+	return same;
+}
+
+static void expect_calls(long mark, const char *calls, const char *what)
+{
+	TEST_ASSERT(calls_are(mark, calls), what);
 }
 
 /* Decision table, data=udp without a YAML: -EINVAL before the server is asked
@@ -1212,6 +1220,89 @@ out:
 	rx_destroy(&rx);
 }
 
+/* A round trip on the management connection: an attribute of ad9361-phy */
+static bool phy_attr_reads(const struct iio_context *ctx)
+{
+	const struct iio_device *phy = iio_context_find_device(ctx, "ad9361-phy");
+	const struct iio_channel *chn;
+	const struct iio_attr *attr;
+	char val[64];
+
+	chn = phy ? iio_device_find_channel(phy, "voltage0", false) : NULL;
+	attr = chn ? iio_channel_find_attr(chn, "sampling_frequency") : NULL;
+
+	return attr && iio_attr_read_raw(attr, val, sizeof(val)) > 0;
+}
+
+#define CLOSE_LOOPS 50
+
+/* The mock's calls for a buffer opened and enabled: the probe, the enable's
+ * setup with the probe's still pending, the start */
+#define STREAMING "setup 9200\nsetup 9200 pending\nstart\n"
+
+/*
+ * A cancel wakes the buffer and leaves its connection open: the server hears
+ * of nothing until the close, whose FREE_BLOCK and CLOSE_BUFFER go on the
+ * management connection, ends the stream. Were the buffer's connection shut
+ * down at the cancel, the server would tear the buffer down by itself while
+ * the close frees its block. Then CLOSE_LOOPS buffers closed while streaming,
+ * the routine path: each close stops and releases its stream once, and the
+ * server is still there afterwards. Run against an iiod-emu built with
+ * -fsanitize=address, this shows that the server uses nothing it freed.
+ */
+TEST_FUNCTION(close_loop)
+{
+	unsigned int i, ok = 0;
+	struct rx rx;
+	long mark;
+	int ret;
+
+	ret = rx_init(&rx, ctx_for(yaml), DEV_NAME, false);
+	CHECK_EQ(ret, 0, "context and mask");
+	if (ret)
+		goto out;
+
+	mark = log_mark();
+	ret = rx_open(&rx, 1);
+	if (!ret)
+		ret = enqueue_all(&rx);
+	if (!ret)
+		ret = iio_buffer_stream_start(rx.stream);
+	CHECK_EQ(ret, 0, "buffer open, a block queued, enabled");
+	if (ret)
+		goto out;
+	expect_calls(mark, STREAMING, "the stream started");
+
+	mark = log_mark();
+	iio_buffer_stream_cancel(rx.stream);
+	CHECK_EQ(iio_block_dequeue(rx.blocks[0], false), -ECANCELED, "the block cancelled");
+	TEST_ASSERT(phy_attr_reads(rx.ctx), "the context reads attributes after the cancel");
+	expect_calls(mark, "", "the cancel alone stops nothing on the server");
+	rx_close(&rx);
+	expect_calls(mark, "stop\nrelease\n", "the close stops and releases the stream, once");
+
+	for (i = 0; i < CLOSE_LOOPS; i++) {
+		mark = log_mark();
+		ret = rx_open(&rx, 1);
+		if (!ret)
+			ret = enqueue_all(&rx);
+		if (!ret)
+			ret = iio_buffer_stream_start(rx.stream);
+		if (ret)
+			printf("  close %u: open, enqueue or enable: %d\n", i, ret);
+		rx_close(&rx);
+		if (ret || !calls_are(mark, STREAMING "stop\nrelease\n")) {
+			printf("  close %u failed\n", i);
+			break;
+		}
+		ok++;
+	}
+	CHECK_EQ(ok, CLOSE_LOOPS, "50 buffers closed while streaming: stop and release once each");
+	TEST_ASSERT(phy_attr_reads(rx.ctx), "the server still answers");
+out:
+	rx_destroy(&rx);
+}
+
 /* --mixed, against float_scan_elements.xml: float-dev voltage1 is le:F16/16,
  * voltage2 le:f32/32 */
 TEST_FUNCTION(mixed_lengths)
@@ -1269,6 +1360,7 @@ int main(int argc, char **argv)
 	RUN_TEST(udp_without_yaml);
 	RUN_TEST(auto_without_yaml);
 	RUN_TEST(refused_at_enable);
+	RUN_TEST(close_loop);
 out:
 	printf("test_daqiri_lifecycle: %d/%d passed, %d failed\n", test_passed, test_count,
 			test_failed);

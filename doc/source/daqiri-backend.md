@@ -202,8 +202,9 @@ both on UDP port 4991; its header comments on these rules.
   the board may still be streaming. A later enable then fails with `-EBADF`.
 - **Close:** the receive thread is joined, the server-side block freed
   (`FREE_BLOCK`), the buffer closed (`CLOSE_BUFFER`) and the queue given back.
-- **Cancel:** the blocked dequeues return `-ECANCELED` and the buffer's
-  connection is shut down, which ends the stream on the server.
+- **Cancel:** the blocked dequeues return `-ECANCELED`, and neither the
+  buffer's connection nor its stream can be used again: the stream ends with
+  `CLOSE_BUFFER`, when the buffer is closed.
 
 ### Datagram checks
 

@@ -1173,8 +1173,8 @@ static int dq_udp_disable(struct dq_udp_buffer *v)
 	if (v->closed)
 		return 0;
 
-	/* A cancel shut the connection down, which ended the stream on the
-	 * server: there is nothing to send DISABLE_BUFFER on */
+	/* A cancel left nothing to send DISABLE_BUFFER on: the stream ends
+	 * with CLOSE_BUFFER */
 	pthread_mutex_lock(&v->lock);
 	cancelled = v->cancelled;
 	pthread_mutex_unlock(&v->lock);
@@ -1249,8 +1249,8 @@ static void dq_udp_cancel(struct dq_udp_buffer *v)
 }
 
 /* Wakes whatever is blocked on the buffer: dequeues, and the stream control
- * on its connection, which stays unusable afterwards; the server then ends
- * the stream with the connection */
+ * on its connection, which stays unusable afterwards; the stream ends with
+ * CLOSE_BUFFER */
 void dq_udp_cancel_buffer(struct iio_buffer_pdata *buf)
 {
 	dq_udp_cancel(buf->udp);

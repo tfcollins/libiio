@@ -125,6 +125,13 @@ static ssize_t dq_mgmt_write(
 	return dq_mgmt_io((struct dq_mgmt *)desc, (void *)src, len, timeout_ms, true);
 }
 
+/*
+ * Latch the eventfd: every wait on the connection, now or later, returns
+ * -EBADF. The socket is left alone, as ip: leaves it (network-unix.c): a
+ * shutdown() would make the server tear down the connection's buffers by
+ * itself while the close of a buffer still frees its block and closes it on
+ * the management connection. dq_mgmt_close() closes the socket afterwards.
+ */
 static void dq_mgmt_cancel(struct iiod_client_pdata *desc)
 {
 	struct dq_mgmt *m = (struct dq_mgmt *)desc;
@@ -132,9 +139,6 @@ static void dq_mgmt_cancel(struct iiod_client_pdata *desc)
 
 	if (m->cancel_fd >= 0 && write(m->cancel_fd, &one, sizeof(one)) < 0)
 		prm_perror(m->params, -errno, "Unable to signal cancellation");
-
-	if (m->fd >= 0)
-		shutdown(m->fd, SHUT_RDWR);
 }
 
 const struct iiod_client_ops dq_mgmt_ops = {

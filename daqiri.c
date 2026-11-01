@@ -831,7 +831,8 @@ static int daqiri_enable_buffer(
 }
 
 /* Wakes whatever is blocked on the buffer; its connection stays unusable
- * afterwards, and with UDP so does the stream. */
+ * afterwards, and with UDP so does the stream, which ends with
+ * CLOSE_BUFFER. */
 static void daqiri_cancel_buffer(struct iio_buffer_pdata *buf)
 {
 	if (buf->path == DQ_PATH_UDP)
