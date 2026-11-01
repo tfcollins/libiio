@@ -39,6 +39,11 @@
  * mask it cannot stream: sample sets of 2 bytes, one 16-bit channel */
 #define REFUSED_SAMPLE_SIZE 2
 
+/* A layout whose second setup the mock refuses with -EBUSY, the first and the
+ * later ones answered: to a client that probes at open, the setup of its first
+ * enable fails. Sample sets of 8 bytes, four 16-bit channels. */
+#define REFUSED_SECOND_SAMPLE_SIZE 8
+
 /* How long the cut answer stalls before more bytes follow */
 #define SHORT_TAIL_STALL_MS 2000
 
@@ -50,6 +55,7 @@ struct emu_udp_mock {
 /* In entry->udp_priv */
 struct emu_udp_mock_buf {
 	uint16_t max_payload;
+	unsigned int setups; /* setup() calls past the layout check */
 };
 
 static void __attribute__((format(printf, 2, 3))) mock_log(
@@ -104,13 +110,15 @@ static int mock_setup(void *priv, struct buffer_entry *entry, const struct iiod_
 {
 	struct emu_udp_mock_buf *mb = entry->udp_priv;
 	const struct iio_channels_mask *mask;
+	ssize_t sample_size = 0;
 
 	mock_log(priv, "setup %u%s", req->max_payload, entry->udp_setup ? " pending" : "");
 
 	/* Refused before it leaves any state behind */
 	if (entry->buf_stream) {
 		mask = iio_buffer_stream_get_channels_mask(entry->buf_stream);
-		if (iio_device_get_sample_size(entry->dev, mask) == REFUSED_SAMPLE_SIZE)
+		sample_size = iio_device_get_sample_size(entry->dev, mask);
+		if (sample_size == REFUSED_SAMPLE_SIZE)
 			return -ENOTSUP;
 	}
 
@@ -120,6 +128,9 @@ static int mock_setup(void *priv, struct buffer_entry *entry, const struct iiod_
 			return -ENOMEM;
 		entry->udp_priv = mb;
 	}
+
+	if (++mb->setups == 2 && sample_size == REFUSED_SECOND_SAMPLE_SIZE)
+		return -EBUSY;
 
 	mb->max_payload = req->max_payload;
 
