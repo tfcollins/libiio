@@ -15,6 +15,15 @@ jobs:
     timeout-minutes: 45
     container:
       image: ghcr.io/tfcollins/libiio-daqiri-ci:latest
+    # daqiri_engine_raw_flows (loopback label) checks the flow rules of an
+    # ibverbs YAML, which only a DAQIRI with the raw engines parses. The image
+    # above still has the socket engine only: it predates the "dpdk ibverbs"
+    # build of CI/daqiri/Dockerfile, and daqiri-ci-image.yml rebuilds it only
+    # when CI/daqiri changes on the main branch. Until then ctest reports that
+    # test as skipped. Once the image is rebuilt with the raw engines, enable
+    # this, so that an image without them fails the job instead:
+    # env:
+    #   DAQIRI_REQUIRE_RAW_ENGINES: "1"
     steps:
       - uses: actions/checkout@v7
       - name: Configure

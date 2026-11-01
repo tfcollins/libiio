@@ -11,26 +11,38 @@
  *
  * - The socket engine: local_addr and remote_addr of the loopback YAML and of
  *   the ZCU102 one, which is also checked to parse.
- * - A raw (ibverbs) engine: the UDP destination port and the IPv4 addresses of
- *   the flow that steers to each queue. DAQIRI's parser keeps a flow's
- *   addresses in network order and its ports in host order; the shim must
- *   hand both over in host order, byte-swapped neither twice nor not at all.
- *   A DAQIRI built without a raw engine cannot parse that YAML: the raw part
- *   is skipped then, and says so. The CI image builds dpdk and ibverbs.
+ * - With --raw, a raw (ibverbs) engine: the UDP destination port and the IPv4
+ *   addresses of the flow that steers to each queue. DAQIRI's parser keeps a
+ *   flow's addresses in network order and its ports in host order; the shim
+ *   must hand both over in host order, byte-swapped neither twice nor not at
+ *   all. Only a DAQIRI built with the ibverbs engine parses that YAML. When
+ *   DAQIRI says that the engine "is not available in this build", and only
+ *   then, the check is skipped: the program exits with SKIP_EXIT, which ctest
+ *   reports as not run. DAQIRI_REQUIRE_RAW_ENGINES=1 makes that a failure, for
+ *   a build that must have the engine, as daqiri.yml's image will once it is
+ *   rebuilt from CI/daqiri/Dockerfile (CI/daqiri/README.md).
  *
- * Usage: test_engine_udp_endpoint <resources dir>
+ * Usage: test_engine_udp_endpoint <resources dir> [--raw]
  */
 
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "../../daqiri-private.h"
 #include "test_framework.h"
 
 #define IP(a, b, c, d) (((uint32_t)(a) << 24) | ((b) << 16) | ((c) << 8) | (d))
+
+/* ctest's SKIP_RETURN_CODE for the raw check (tests/daqiri/CMakeLists.txt) */
+#define SKIP_EXIT 77
+
+/* What DAQIRI logs for a YAML whose engine its build left out (types.h) */
+#define NOT_IN_BUILD "Engine 'ibverbs' is not available in this build"
 
 struct endpoint {
 	uint32_t local_ip, remote_ip;
@@ -38,6 +50,7 @@ struct endpoint {
 };
 
 static const char *dir;
+static bool raw_skipped;
 
 static int endpoint_of(const char *file, const char *iface, int queue, struct endpoint *ep)
 {
@@ -108,23 +121,67 @@ TEST_FUNCTION(socket_engine)
 	TEST_ASSERT_EQ(ret, -EINVAL, "zcu102-socket.yaml has no interface eth9");
 }
 
+/* dq_yaml_validate() of <path>, with what DAQIRI logged meanwhile, to stderr,
+ * in <log> (and still on stderr) */
+static int validate_logged(const char *path, char *err, size_t errlen, char *log, size_t loglen)
+{
+	FILE *tmp = tmpfile();
+	int saved = -1, ret;
+	size_t n = 0;
+
+	fflush(stderr);
+	if (tmp)
+		saved = dup(STDERR_FILENO);
+	if (saved >= 0 && dup2(fileno(tmp), STDERR_FILENO) < 0) {
+		close(saved);
+		saved = -1;
+	}
+
+	ret = dq_yaml_validate(path, err, errlen);
+
+	fflush(stderr);
+	if (saved >= 0) {
+		dup2(saved, STDERR_FILENO);
+		close(saved);
+		rewind(tmp);
+		n = fread(log, 1, loglen - 1, tmp);
+	}
+	if (tmp)
+		fclose(tmp);
+	log[n] = '\0';
+	fputs(log, stderr);
+
+	return ret;
+}
+
 TEST_FUNCTION(raw_flows)
 {
 	/* udp_dst 4991 is 0x137f, 32531 when swapped; 192.0.2.2 would be
 	 * 2.2.0.192 */
 	const struct endpoint q0 = { IP(192, 0, 2, 2), IP(192, 0, 2, 1), 4991, 4990 };
 	const struct endpoint q1 = { IP(198, 51, 100, 7), 0, 6001, 0 };
-	char path[4096], err[256] = "";
+	const char *require = getenv("DAQIRI_REQUIRE_RAW_ENGINES");
+	char path[4096], err[256] = "", log[8192];
+	bool required = require && !strcmp(require, "1");
 	struct endpoint ep;
 	int ret;
 
 	snprintf(path, sizeof(path), "%s/raw-flows-ibverbs.yaml", dir);
-	if (dq_yaml_validate(path, err, sizeof(err))) {
-		printf("  SKIP: this DAQIRI build cannot parse raw-flows-ibverbs.yaml (%s): it has no "
-		       "ibverbs engine. The flow byte order is not checked here.\n",
-				err);
+	ret = validate_logged(path, err, sizeof(err), log, sizeof(log));
+	if (ret && strstr(log, NOT_IN_BUILD) && !required) {
+		printf("  SKIP: this DAQIRI build has no ibverbs engine (\"%s\"): the flows' byte "
+		       "order is not checked. DAQIRI_REQUIRE_RAW_ENGINES=1 fails instead.\n",
+				NOT_IN_BUILD);
+		raw_skipped = true;
 		return;
 	}
+
+	if (ret)
+		printf("  raw-flows-ibverbs.yaml does not parse: %s%s\n", err,
+				required ? " (DAQIRI_REQUIRE_RAW_ENGINES=1)" : "");
+	TEST_ASSERT_EQ(ret, 0, "raw-flows-ibverbs.yaml parses");
+	if (ret)
+		return;
 
 	ret = endpoint_of("raw-flows-ibverbs.yaml", "", 0, &ep);
 	check("raw-flows-ibverbs.yaml queue 0", ret, &ep, &q0);
@@ -134,17 +191,24 @@ TEST_FUNCTION(raw_flows)
 
 int main(int argc, char **argv)
 {
-	if (argc != 2) {
-		printf("Usage: %s <resources dir>\n", argv[0]);
+	bool raw = argc == 3 && !strcmp(argv[2], "--raw");
+
+	if (argc != 2 && !raw) {
+		printf("Usage: %s <resources dir> [--raw]\n", argv[0]);
 		return 2;
 	}
 	dir = argv[1];
 
-	RUN_TEST(socket_engine);
-	RUN_TEST(raw_flows);
+	if (raw)
+		RUN_TEST(raw_flows);
+	else
+		RUN_TEST(socket_engine);
 
-	printf("test_engine_udp_endpoint: %d/%d passed, %d failed\n", test_passed, test_count,
-			test_failed);
+	printf("test_engine_udp_endpoint: %d/%d passed, %d failed%s\n", test_passed, test_count,
+			test_failed, raw_skipped ? ", skipped" : "");
 
-	return test_failed ? 1 : 0;
+	if (test_failed)
+		return 1;
+
+	return raw_skipped ? SKIP_EXIT : 0;
 }

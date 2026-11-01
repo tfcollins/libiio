@@ -282,8 +282,10 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
 endif ()
 
 # The engine shim's view of a YAML, parsed only, no engine started: the UDP
-# endpoint of a socket engine queue and, when this DAQIRI build has a raw engine
-# to parse it with, of a raw queue's flow rule. The shim is built into the test.
+# endpoint of a socket engine queue and, in daqiri_engine_raw_flows, of a raw
+# queue's flow rule. Only a DAQIRI with the ibverbs engine parses the raw YAML:
+# without it that test exits 77, which ctest reports as skipped, unless
+# DAQIRI_REQUIRE_RAW_ENGINES=1 makes it fail. The shim is built into the test.
 if (WITH_DAQIRI_BACKEND)
     add_executable(
         test_engine_udp_endpoint test_engine_udp_endpoint.c
@@ -299,8 +301,12 @@ if (WITH_DAQIRI_BACKEND)
     add_test(NAME daqiri_engine_udp_endpoint
              COMMAND test_engine_udp_endpoint
                      ${CMAKE_CURRENT_SOURCE_DIR}/resources)
-    set_tests_properties(daqiri_engine_udp_endpoint
+    add_test(NAME daqiri_engine_raw_flows
+             COMMAND test_engine_udp_endpoint
+                     ${CMAKE_CURRENT_SOURCE_DIR}/resources --raw)
+    set_tests_properties(daqiri_engine_udp_endpoint daqiri_engine_raw_flows
                          PROPERTIES LABELS daqiri-loopback TIMEOUT 60)
+    set_tests_properties(daqiri_engine_raw_flows PROPERTIES SKIP_RETURN_CODE 77)
 endif ()
 
 # Emulator tests of the iiod side of UDP sample mode: the iiod-client API over a

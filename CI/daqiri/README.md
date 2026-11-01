@@ -178,3 +178,18 @@ none). The script also fails when ctest selects no api tests or not all of
 them pass. Set `DAQIRI_LOOPBACK_URI=ip:127.0.0.1` to run the same thing
 through `ip:` as a control. Nothing is excluded: all `api` tests pass through
 `ip:`, as in `.github/workflows/zephyr-tests.yml`.
+
+`daqiri_engine_raw_flows` (label `daqiri-loopback`) checks the byte order of
+a raw engine's flow rules (`tests/daqiri/resources/raw-flows-ibverbs.yaml`,
+parsed only), which only a DAQIRI built with the ibverbs engine can parse.
+When DAQIRI says, while it parses that YAML, that "Engine 'ibverbs' is not
+available in this build", the test exits 77 and ctest reports it as skipped
+("The following tests did not run"); any other failure to parse fails it.
+Set `DAQIRI_REQUIRE_RAW_ENGINES=1` where the raw engines must be there: the
+skip is then a failure too. The `software` job of `daqiri.yml` carries that
+setting commented out, because the `ghcr.io/tfcollins/libiio-daqiri-ci:latest`
+it pulls predates the `"dpdk ibverbs"` build of the Dockerfile above and has
+the socket engine only; `daqiri-ci-image.yml` rebuilds it when `CI/daqiri`
+changes on the main branch, after which the setting is to be enabled. A
+build against a raw-engine DAQIRI (`-DCMAKE_PREFIX_PATH=<prefix>`, the
+prefix of `build-daqiri.sh <prefix> "dpdk ibverbs"`) runs the check.
