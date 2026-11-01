@@ -264,7 +264,7 @@ the `-EIO` block, before any datagram reached a block again, are part of the
 same overrun and fail no further block, so an application that queues one
 block at a time during an overrun still receives data.
 
-### TCP
+## TCP data path
 
 The data plane is the stock `iiod` binary protocol on the buffer's own TCP
 connection, so unchanged boards running `iiod` work, and DAQIRI is not used.
