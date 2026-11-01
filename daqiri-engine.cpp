@@ -323,6 +323,59 @@ const daqiri::FlowConfig *queue_flow(const daqiri::InterfaceConfig &ifc, int que
 	return nullptr;
 }
 
+/* The interface of the YAML named <iface>, by name or by address (a PCI BDF on
+ * the raw engines, the socket address); empty or NULL: the first */
+const daqiri::InterfaceConfig *iface_named(const daqiri::NetworkConfig &cfg, const char *iface)
+{
+	for (const auto &it : cfg.ifs_)
+		if (!iface || !iface[0] || it.name_ == iface || it.address_ == iface)
+			return &it;
+
+	return nullptr;
+}
+
+/* dq_engine_udp_endpoint() for queue <queue_id> of interface <ifc> */
+int udp_endpoint(const daqiri::CommonConfig &c, const daqiri::InterfaceConfig &ifc, int queue_id,
+		uint32_t *local_ip, uint16_t *local_port, uint32_t *remote_ip,
+		uint16_t *remote_port)
+{
+	const daqiri::FlowConfig *flow;
+
+	*local_ip = *remote_ip = 0;
+	*local_port = *remote_port = 0;
+
+	if (!find_rx_queue(ifc, queue_id))
+		return -EINVAL;
+
+	if (is_socket_udp(c)) {
+		/* The engine binds local_addr and connects to remote_addr */
+		*local_ip = ipv4_of(ifc.socket_.local_ip_);
+		*local_port = ifc.socket_.local_port_;
+		*remote_ip = ipv4_of(ifc.socket_.remote_ip_);
+		*remote_port = ifc.socket_.remote_port_;
+		return 0;
+	}
+
+	if (!is_raw(c))
+		return -ENOTSUP;
+
+	/* The address of the kernel's interface on that port, which answers
+	 * ARP for it, else whatever destination the flow names. DAQIRI's parser
+	 * stores the flow's addresses in network order (in_addr_t, as
+	 * inet_pton() gives them) and its ports in host order. */
+	flow = queue_flow(ifc, queue_id);
+	*local_ip = netdev_ipv4(pci_netdev(ifc.address_), 0, nullptr);
+	if (flow) {
+		if (!*local_ip)
+			*local_ip = ntohl(flow->match_.ipv4_dst_);
+		*local_port = flow->match_.udp_dst_;
+		*remote_ip = ntohl(flow->match_.ipv4_src_);
+		*remote_port = flow->match_.udp_src_;
+	}
+
+	return 0;
+}
+
 /* Parse only: never initialises the engine. */
 int parse(const char *path, daqiri::NetworkConfig &cfg, char *err, size_t errlen)
 {
@@ -498,17 +551,9 @@ extern "C" void dq_engine_release(struct dq_engine *e)
 extern "C" int dq_engine_get_port(struct dq_engine *e, const char *iface, int *port_id)
 {
 	try {
-		const daqiri::InterfaceConfig *ifc = nullptr;
+		const daqiri::InterfaceConfig *ifc = iface_named(e->cfg, iface);
 		int port;
 
-		/* By name, or by address: a PCI BDF (raw engines) or the
-		 * socket address */
-		for (const auto &it : e->cfg.ifs_) {
-			if (!iface || !iface[0] || it.name_ == iface || it.address_ == iface) {
-				ifc = &it;
-				break;
-			}
-		}
 		if (!ifc)
 			return -EINVAL;
 
@@ -584,41 +629,45 @@ extern "C" int dq_engine_udp_endpoint(struct dq_engine *e, int port_id, int queu
 		uint16_t *remote_port)
 {
 	try {
-		const daqiri::CommonConfig &c = e->cfg.common_;
 		const daqiri::InterfaceConfig *ifc = find_iface(e, port_id);
-		const daqiri::FlowConfig *flow;
 
 		*local_ip = *remote_ip = 0;
 		*local_port = *remote_port = 0;
 
-		if (!ifc || !find_rx_queue(*ifc, queue_id))
+		if (!ifc)
 			return -EINVAL;
 
-		if (is_socket_udp(c)) {
-			/* The engine binds local_addr and connects to remote_addr */
-			*local_ip = ipv4_of(ifc->socket_.local_ip_);
-			*local_port = ifc->socket_.local_port_;
-			*remote_ip = ipv4_of(ifc->socket_.remote_ip_);
-			*remote_port = ifc->socket_.remote_port_;
-			return 0;
-		}
+		return udp_endpoint(e->cfg.common_, *ifc, queue_id, local_ip, local_port, remote_ip,
+				remote_port);
+	} catch (...) {
+		return -EIO;
+	}
+}
 
-		if (!is_raw(c))
-			return -ENOTSUP;
+extern "C" int dq_yaml_udp_endpoint(const char *yaml, const char *iface, int queue_id,
+		uint32_t *local_ip, uint16_t *local_port, uint32_t *remote_ip,
+		uint16_t *remote_port)
+{
+	try {
+		daqiri::NetworkConfig cfg{};
+		const daqiri::InterfaceConfig *ifc;
+		int ret;
 
-		/* The address of the kernel's interface on that port, which
-		 * answers ARP for it, else whatever destination the flow names */
-		flow = queue_flow(*ifc, queue_id);
-		*local_ip = netdev_ipv4(pci_netdev(ifc->address_), 0, nullptr);
-		if (flow) {
-			if (!*local_ip)
-				*local_ip = ntohl(flow->match_.ipv4_dst_);
-			*local_port = flow->match_.udp_dst_;
-			*remote_ip = ntohl(flow->match_.ipv4_src_);
-			*remote_port = flow->match_.udp_src_;
-		}
+		*local_ip = *remote_ip = 0;
+		*local_port = *remote_port = 0;
 
-		return 0;
+		ret = parse(yaml, cfg, nullptr, 0);
+		if (ret)
+			return ret;
+
+		ifc = iface_named(cfg, iface);
+		if (!ifc)
+			return -EINVAL;
+
+		return udp_endpoint(cfg.common_, *ifc, queue_id, local_ip, local_port, remote_ip,
+				remote_port);
+	} catch (const std::bad_alloc &) {
+		return -ENOMEM;
 	} catch (...) {
 		return -EIO;
 	}

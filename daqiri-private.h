@@ -164,6 +164,12 @@ int dq_engine_get_port(struct dq_engine *e, const char *iface, int *port_id);
 int dq_engine_udp_endpoint(struct dq_engine *e, int port_id, int queue_id, uint32_t *local_ip,
 		uint16_t *local_port, uint32_t *remote_ip, uint16_t *remote_port);
 
+/* The same for interface <iface> of <yaml> (matched as dq_engine_get_port()
+ * does) from the parsed file alone: the engine is never started, so it works
+ * for any engine this DAQIRI build can parse. For tests and diagnostics. */
+int dq_yaml_udp_endpoint(const char *yaml, const char *iface, int queue_id, uint32_t *local_ip,
+		uint16_t *local_port, uint32_t *remote_ip, uint16_t *remote_port);
+
 /* What one packet of a receive queue can be; 0 where unknown */
 struct dq_rxq_limits {
 	size_t buf_size;  /* bytes of one packet buffer, both regions with header-data split */
