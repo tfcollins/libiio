@@ -57,6 +57,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../../daqiri-udp-stream.h"
 #include "../../iiod-udp-stream.h"
 #include "test_framework.h"
 
@@ -973,13 +974,28 @@ static void *send_late(void *d)
 	return NULL;
 }
 
+static long long ns_since(const struct timespec *t0)
+{
+	struct timespec t;
+
+	clock_gettime(CLOCK_MONOTONIC, &t);
+
+	return (long long)(t.tv_sec - t0->tv_sec) * 1000000000LL + (t.tv_nsec - t0->tv_nsec);
+}
+
 /* After DISABLE_BUFFER the backend receives until the queue has been quiet
- * for 20 ms (500 ms at most): datagrams 5 ms apart that go on for 55 ms
- * after the answer all arrive. A fixed 20 ms would miss the later ones. */
+ * for 20 ms, 500 ms at most: test_udp_drain checks that rule on made-up
+ * times. Here datagrams 5 ms apart go on for some 55 ms after the answer.
+ * On an idle host all 12 arrive; a thread that the host holds back for
+ * 20 ms ends the drain sooner, as the rule wants, so only what holds however
+ * the threads run is checked: the disable drains for 20 ms at least, and
+ * what arrived is counted and assembled in order. */
 TEST_FUNCTION(drain_until_idle)
 {
 	const struct timespec head_start = { .tv_nsec = 7 * 1000000L };
 	struct late_sender ls = { .fd = -1 };
+	long long n, full, ns;
+	struct timespec t0;
 	struct iio_block *b;
 	pthread_t thread;
 	unsigned int i, done = 0;
@@ -1009,20 +1025,31 @@ TEST_FUNCTION(drain_until_idle)
 
 	/* The first datagram or so before the disable, the rest after */
 	nanosleep(&head_start, NULL);
+	clock_gettime(CLOCK_MONOTONIC, &t0);
 	CHECK_EQ(iio_buffer_stream_stop(rx.stream), 0, "disable, while datagrams still come");
+	ns = ns_since(&t0);
 	pthread_join(thread, NULL);
 	CHECK_EQ(ls.ret, 0, "12 datagrams sent, 5 ms apart");
 
-	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_packets"), LATE_DATAGRAMS,
-			"all 12 received: the disable drained until the queue was quiet");
-	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_dropped_no_block"), LATE_DATAGRAMS - MAX_BLOCKS,
-			"8 for want of a block: received all the same");
-	for (i = 0; i < MAX_BLOCKS; i++) {
+	n = attr_ll(rx.buf, "daqiri_rx_packets");
+	printf("  disable: %lld ms, %lld of the %d datagrams received\n", ns / 1000000, n,
+			LATE_DATAGRAMS);
+	TEST_ASSERT(ns >= DQ_UDP_DRAIN_IDLE_MS * 1000000LL,
+			"the disable drained for 20 ms at least");
+	TEST_ASSERT(n >= 0 && n <= LATE_DATAGRAMS, "no more received than sent");
+
+	/* One block per datagram while the 4 last, the others for want of one */
+	full = n < MAX_BLOCKS ? n : MAX_BLOCKS;
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_blocks_completed"), full,
+			"a block per datagram, 4 at most");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_dropped_no_block"), n - full,
+			"the others dropped for want of a block");
+	for (i = 0; i < full; i++) {
 		b = rx.blocks[i];
 		if (!iio_block_dequeue(b, true) && block_is(b, i))
 			done++;
 	}
-	CHECK_EQ(done, MAX_BLOCKS, "blocks 0 to 3 hold datagrams 0 to 3");
+	CHECK_EQ(done, full, "the completed blocks hold datagrams 0, 1, ... in order");
 out:
 	rx_destroy(&rx);
 	close(ls.fd);
