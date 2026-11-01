@@ -9,6 +9,11 @@
  * --udp, so that a client which only sends the setup to a server that does,
  * like the daqiri: backend, can also be tested against one that never streams.
  *
+ * A setup's line ends in " pending" when the responder still holds an earlier
+ * setup of the buffer that no enable has used and no disable has dropped: what
+ * a client's DISABLE did shows there, since the responder calls no provider
+ * for a DISABLE with nothing streaming.
+ *
  * Copyright (C) 2026 Analog Devices, Inc.
  */
 
@@ -100,7 +105,7 @@ static int mock_setup(void *priv, struct buffer_entry *entry, const struct iiod_
 	struct emu_udp_mock_buf *mb = entry->udp_priv;
 	const struct iio_channels_mask *mask;
 
-	mock_log(priv, "setup %u", req->max_payload);
+	mock_log(priv, "setup %u%s", req->max_payload, entry->udp_setup ? " pending" : "");
 
 	/* Refused before it leaves any state behind */
 	if (entry->buf_stream) {

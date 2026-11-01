@@ -7,7 +7,8 @@
  * The responder's rules for a UDP stream provider (iiod/udp-stream.h), seen
  * through iiod-emu --udp-mock-provider <log>: a provider that sends nothing
  * and writes one line per call. After each step the log must have grown by
- * exactly the calls the rules allow:
+ * exactly the calls the rules allow (a setup's line says " pending" when an
+ * earlier one still is):
  * - start() uses up the pending setup: a second ENABLE starts nothing;
  * - SETUP while a stream is active is answered -EBUSY, with no call;
  * - stop() runs only for an active stream, so not after a failed start();
@@ -144,7 +145,7 @@ static void contract(
 
 	ret = setup(buf, MAX_PAYLOAD, &resp);
 	TEST_ASSERT_EQ(ret, 0, "setup again before the enable");
-	expect_calls("setup 8960\n", "setup again: setup()");
+	expect_calls("setup 8960 pending\n", "setup again: setup(), the first one still pending");
 
 	/* The server cannot enable a buffer without a block */
 	block = iiod_client_create_block(buf, BLOCK_SIZE, &data);
