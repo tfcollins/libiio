@@ -767,6 +767,10 @@ static void handle_udp_stream_setup(struct parser_pdata *pdata, const struct iio
 		goto out_send_response;
 
 	if (!udp_stream_ops) {
+		/* A client must not send it: this server does not advertise
+		 * iiod,udp-stream */
+		IIO_WARNING("UDP stream setup for device %u buffer %u refused: no UDP stream provider\n",
+				(unsigned int)cmd->dev, (unsigned int)cmd->code);
 		ret = -ENOTSUP;
 		goto out_send_response;
 	}
