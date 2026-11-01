@@ -471,14 +471,6 @@ static void handle_open_buffer(struct parser_pdata *pdata, const struct iiod_com
 	if (!dev)
 		goto err_send_response;
 
-	entry = get_iio_buffer_entry(pdata, cmd);
-	if (!iio_err(entry)) {
-		/* No error? This buffer already exists, so return
-		 * -EEXIST. */
-		ret = -EEXIST;
-		goto err_send_response;
-	}
-
 	entry = zalloc(sizeof(*entry));
 	if (!entry) {
 		ret = -ENOMEM;
@@ -500,9 +492,18 @@ static void handle_open_buffer(struct parser_pdata *pdata, const struct iiod_com
 	data.ptr = entry->words;
 	data.size = nb_words * 4;
 
+	/* Read the mask whatever the answer will be: left unread, it would be
+	 * taken for the next command */
 	ret = iiod_command_data_read(cmd_data, &data);
 	if (ret < 0)
 		goto err_free_words;
+
+	if (!iio_err(get_iio_buffer_entry(pdata, cmd))) {
+		/* No error? This buffer already exists, so return
+		 * -EEXIST. */
+		ret = -EEXIST;
+		goto err_free_words;
+	}
 
 	/* Create a temporary mask object */
 	mask = iio_create_channels_mask(nb_channels);

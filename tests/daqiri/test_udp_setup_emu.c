@@ -8,6 +8,10 @@
  * provider: the server must answer -ENOTSUP and keep the connection usable,
  * where a server without the command drops it. Talks to the server through
  * the iiod-client API over a plain TCP socket, as the daqiri: backend does.
+ *
+ * Also an OPEN_BUFFER of a buffer that another connection has open, which
+ * the daqiri: backend's UDP tests meet when a connection goes away: -EEXIST,
+ * and that connection must stay in step for the next command.
  */
 
 #include <errno.h>
@@ -97,6 +101,55 @@ static void udp_setup(struct iiod_client *client, const struct iio_device *dev,
 	TEST_ASSERT_EQ(ret, 0, "connection usable after close");
 }
 
+/* The channel mask of OPEN_BUFFER follows the command. The server must read
+ * it before it refuses the open, or take it for the start of the next
+ * command: with voltage0+voltage1, a "response" whose length the next
+ * command's first bytes spell, which the server then waits for. */
+static void open_twice(
+		struct emu_client *ec, const struct iio_device *dev, struct iio_channels_mask *mask)
+{
+	struct iiod_client_buffer_pdata *buf, *again;
+	struct iio_channels_mask *other_mask;
+	const struct iio_device *other_dev;
+	struct emu_client other;
+	int ret;
+
+	buf = iiod_client_open_buffer(ec->client, ec->client, dev, 0, mask);
+	ret = iio_err(buf);
+	TEST_ASSERT_EQ(ret, 0, "buffer opened on the first connection");
+	if (ret)
+		return;
+
+	ret = emu_client_open(&other);
+	TEST_ASSERT_EQ(ret, 0, "second connection");
+	if (ret)
+		goto out_close_buffer;
+
+	other_dev = iio_context_find_device(other.ctx, EMU_DEVICE);
+	other_mask = other_dev ? iio_create_channels_mask(iio_device_get_channels_count(other_dev))
+			       : NULL;
+	TEST_ASSERT_PTR_NOT_NULL(other_mask, "second connection: mask");
+	if (!other_mask)
+		goto out_close_other;
+	iio_channel_enable(iio_device_find_channel(other_dev, "voltage0", false), other_mask);
+	iio_channel_enable(iio_device_find_channel(other_dev, "voltage1", false), other_mask);
+
+	again = iiod_client_open_buffer(other.client, other.client, other_dev, 0, other_mask);
+	ret = iio_err(again);
+	TEST_ASSERT_EQ(ret, -EEXIST, "the same buffer from the second connection: -EEXIST");
+	if (!ret)
+		iiod_client_close_buffer(again);
+
+	ret = iiod_client_nop(other.client);
+	TEST_ASSERT_EQ(ret, 0, "the second connection still in step: NOP answered");
+
+	iio_channels_mask_destroy(other_mask);
+out_close_other:
+	emu_client_close(&other);
+out_close_buffer:
+	iiod_client_close_buffer(buf);
+}
+
 int main(void)
 {
 	const struct iio_device *dev;
@@ -128,6 +181,7 @@ int main(void)
 	iio_channel_enable(iio_device_find_channel(dev, "voltage1", false), mask);
 
 	udp_setup(ec.client, dev, mask);
+	open_twice(&ec, dev, mask);
 
 	iio_channels_mask_destroy(mask);
 
