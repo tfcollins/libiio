@@ -169,6 +169,28 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                    300)
 endif ()
 
+# The engine shim's view of a YAML, parsed only, no engine started: the UDP
+# endpoint of a socket engine queue and, when this DAQIRI build has a raw engine
+# to parse it with, of a raw queue's flow rule. The shim is built into the test.
+if (WITH_DAQIRI_BACKEND)
+    add_executable(
+        test_engine_udp_endpoint test_engine_udp_endpoint.c
+                                 ${CMAKE_SOURCE_DIR}/daqiri-engine.cpp)
+    target_compile_features(test_engine_udp_endpoint PRIVATE cxx_std_17)
+    target_link_libraries(
+        test_engine_udp_endpoint PRIVATE iio daqiri::daqiri CUDA::cudart
+                                         Threads::Threads ${CMAKE_DL_LIBS})
+    target_include_directories(test_engine_udp_endpoint
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+    target_compile_definitions(test_engine_udp_endpoint PRIVATE TESTS_DEBUG)
+
+    add_test(NAME daqiri_engine_udp_endpoint
+             COMMAND test_engine_udp_endpoint
+                     ${CMAKE_CURRENT_SOURCE_DIR}/resources)
+    set_tests_properties(daqiri_engine_udp_endpoint
+                         PROPERTIES LABELS daqiri-loopback TIMEOUT 60)
+endif ()
+
 # Emulator tests of the iiod side of UDP sample mode: the iiod-client API over a
 # plain TCP socket against iiod-emu on 127.0.0.1:30431. They need neither the
 # daqiri module nor DAQIRI.
