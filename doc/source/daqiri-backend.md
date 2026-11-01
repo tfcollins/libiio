@@ -351,7 +351,8 @@ sample set that is at most the backend's limit and 9200 bytes.
 | `--udp-drop-every <n>`, `--udp-drop-list <a,b,...>`, `--udp-drop-prob <p>` with `--udp-seed <s>` | Drop datagrams: they keep their sequence numbers, so that the host sees the gap. |
 | `--udp-reorder-window <k>` | Send datagram mk just before mk-1, for every m. |
 | `--udp-dup-every <n>` | Send datagrams n-1, 2n-1, ... twice in a row. |
-| `--udp-json <file>` | The oracle: at every disable, how many datagrams the last enable sent (copies included), dropped, reordered (pairs) and duplicated. |
+| `--udp-count <n>` | End the stream of an enable by itself after the datagram numbers 0 to n-1, the dropped ones included; nothing is sent then until the next enable. |
+| `--udp-json <file>` | The oracle: at every disable, and when `--udp-count` ends a stream, how many datagrams the last enable sent (copies included), dropped, reordered (pairs) and duplicated. |
 
 On a loopback, against the loopback configuration:
 
@@ -366,8 +367,10 @@ The report shows `data_path udp` and, with no injection, every loss counter
 at zero; with `--udp-drop-every 100`, `daqiri_rx_lost_packets` grows by what
 the emulator dropped. Unpaced, the emulator outruns a loopback socket and the
 host's blocks, which shows as losses and overruns. Without `--udp` the
-emulator, like a stock `iiod`, refuses the setup command with `-ENOTSUP` and
-logs it; the backend never sends it there, since nothing is advertised.
+emulator refuses the setup command with `-ENOTSUP` and logs it, as an `iiod`
+built from this libiio does (an older `iiod` drops the connection on a command
+it does not know); the backend never sends it there, since nothing is
+advertised.
 
 ## Limitations
 

@@ -48,8 +48,9 @@ ports with the loopback tests, so run them one at a time:
 
 | Test | What it covers |
 |---|---|
-| `daqiri_udp_setup_emu` | a server with no UDP provider answers the setup with `-ENOTSUP` and the connection stays usable |
+| `daqiri_udp_setup_emu` | a server with no UDP provider answers the setup with `-ENOTSUP` and the connection stays usable; an OPEN_BUFFER of a buffer that another connection has open gets `-EEXIST` and leaves its connection in step (the server reads the channel mask first) |
 | `daqiri_udp_emu_server` | `iiod-emu --udp --udp-drop-every 10` seen from a plain UDP socket on 127.0.0.1:25101: payload sizing, every datagram's source, header and payload against the sample file, the oracle; a second enable restarts the sequence under a new stream ID |
+| `daqiri_udp_emu_count` | `--udp-count 100 --udp-drop-every 10`: the stream ends by itself after the numbers 0 to 99, 99 among the drops, with the oracle written then and unchanged at the disable |
 | `daqiri_udp_emu_prompt_stop` | at one datagram per second, DISABLE, CLOSE_BUFFER and a lost connection stop the stream at once |
 | `daqiri_udp_provider_contract` | the responder's rules for providers, against the logging mock provider (`--udp-mock-provider`) |
 | `daqiri_udp_setup_short_tail` | a setup answer cut short: the client gives up without the late bytes landing in memory it no longer owns |
@@ -68,20 +69,29 @@ and `daqiri-udp-25101`; run them one at a time:
 |---|---|
 | `daqiri_context` | management plane against `ip:`; URI keys (the removed `framing=` ones refused); `daqiri_data_path` over TCP |
 | `daqiri_block_equivalence` | `daqiri:...,data=tcp` carries the same bytes and context as `ip:`; cancel, `data_port`; `data=auto` without a YAML streams over TCP |
-| `daqiri_lifecycle`, `daqiri_lifecycle_mixed` | `data=udp` against the mock provider: block states, destroy with a buffer open, one YAML per process, one buffer per queue, the `daqiri_*` attributes, refused probes (TCP with `data=auto`, `-ENOTSUP` with `data=udp`), hand-built datagrams (gaps, resyncs, also with no block queued, zero-fill, the restart after a new enable); the decision table against an advertising server (`data=udp` without a YAML: `-EINVAL`; `data=auto` without one: TCP, no setup sent); a setup refused at enable: the enable fails with the server's error, no fallback, and the DISABLE that drops the pending probe shows in the mock's log. `--mixed`: 16- and 32-bit channels in one buffer |
+| `daqiri_lifecycle`, `daqiri_lifecycle_mixed` | `data=udp` against the mock provider: block states, destroy with a buffer open, one YAML per process, one buffer per queue, the `daqiri_*` attributes, refused probes (TCP with `data=auto`, `-ENOTSUP` with `data=udp`), hand-built datagrams (gaps, resyncs, also with no block queued, zero-fill, the restart after a new enable, datagrams that keep coming for 55 ms after DISABLE, which the drain receives until the queue is quiet); the decision table against an advertising server (`data=udp` without a YAML: `-EINVAL`; `data=auto` without one: TCP, no setup sent); a setup refused at enable: the enable fails with the server's error, no fallback, and the DISABLE that drops the pending probe shows in the mock's log. `--mixed`: 16- and 32-bit channels in one buffer |
 | `daqiri_lifecycle_wrong_source` | `iiod-emu --udp` sending from another port than the YAML's `remote_addr`: `-EADDRNOTAVAIL`, with `data=udp` and `data=auto` |
 | `daqiri_engine_udp_endpoint` | the engine shim's view of a YAML, only parsed: `local_addr`/`remote_addr` of the socket engine YAMLs (loopback, ZCU102), and the flow rules of a raw (ibverbs) YAML in the right byte order; that part is skipped, saying so, when DAQIRI has no raw engine |
-| `daqiri_udp_loopback` | UDP sample mode end to end against `iiod-emu --udp`, one emulator per case with its own injection flags: `clean`, `drop_list`, `drop_list_lossy` (exact zero-fill), `reorder`, `duplicate`, `slow_consumer` and `slow_consumer_lossy` (a host overrun), `burst_gap` (500 ms disabled, then a new stream); every block identified byte for byte against the sample file, the counters against the emulator's oracle |
-| `daqiri_udp_equivalence` | the same device and mask through `data=tcp` and `data=udp`: the same bytes, the sample file repeated, over 31 cycles of it |
+| `daqiri_udp_loopback` | UDP sample mode end to end against `iiod-emu --udp`, one emulator per case with its own flags, each stream ended by `--udp-count`: `clean`, `drop_list`, `drop_list_lossy` (exact zero-fill), `drop_every` (a trailing drop), `reorder`, `duplicate`, `slow_consumer` and `slow_consumer_lossy` (a host overrun, exact by count), `burst_gap` (500 ms disabled, then a new stream); every block identified byte for byte against the sample file, the oracle against the model of the emulator's emission, every counter against both |
+| `daqiri_udp_equivalence` | the same device and mask through `data=tcp` and `data=udp`: the same bytes, the sample file repeated, over 12 cycles of it |
 | `daqiri_auto_fallback` | the plain emulator (no `--udp`): `data=auto` with a YAML streams over TCP, never sends the setup (the server would log it) and never starts the engine |
 | `daqiri_udp_refused` | the plain emulator: `data=udp` fails the open with `-ENOTSUP` without asking the server; the context still reads attributes, and a `data=tcp` context opens the buffer meanwhile |
 | `daqiri_loopback_api` | the `api` tests over `daqiri:...,data=tcp` for every emu XML (`run_loopback.sh`); `DAQIRI_LOOPBACK_URI=ip:127.0.0.1` runs the control through `ip:` |
 
-`daqiri_udp_loopback`'s oracle checks: every datagram sent arrived
-(`rx_packets` + late + duplicates == `sent`), late == `reordered`,
-duplicates == `duplicated`, and lost == `dropped` less the drops past the last
-datagram sent, which the host cannot see. The emulator is paced (`--udp-pps`)
-in every case, so that the oracle stays exact.
+`daqiri_udp_loopback` and `daqiri_udp_equivalence` leave nothing to timing.
+They use `resources/socket-udp-loopback-1472.yaml`, whose 1456-byte payloads
+the kernel's default receive buffer holds some 90 of, and a sample file that
+ctest writes (`udp-loopback/` in the build tree: 4099 letters and digits,
+whose payloads all differ, so that a block tells which datagram it holds).
+The emulator ends each stream by itself after `--udp-count` datagram numbers,
+fewer than the receive buffer holds, and writes its oracle then; the test
+dequeues exactly the blocks it expects, waits until the backend has seen
+every datagram sent, and only then disables. The oracle checks: the model's
+counts, every datagram sent arrived (`rx_packets` + late + duplicates ==
+`sent`), late == `reordered`, duplicates == `duplicated`, and lost ==
+`dropped` less the drops past the last datagram sent, which the host cannot
+see. A case whose datagrams did not all arrive says how many the kernel
+dropped for a full receive buffer meanwhile.
 
 `with_emu.sh [--emu-args <arg>... --] <xml> <cmd...>` runs a command against
 an emulator serving `emu:<xml>` (use an absolute path for the XML), with the
@@ -95,7 +105,8 @@ command may read. Set `IIOD_EMU` to the `iiod-emu` binary
 `iiod-emu --udp` serves UDP sample mode: it streams the emulated device's
 sample file (`<device>_buf<n>.bin` next to the XML) as datagrams, from
 `--udp-from` (default 127.0.0.1:25102, the loopback YAML's `remote_addr`),
-paced by `--udp-pps`, with drops, reordering and duplicates on request, and
+paced by `--udp-pps`, with drops, reordering and duplicates on request, ends
+the stream of an enable after `--udp-count` datagram numbers if asked, and
 writes its oracle with `--udp-json`. `iiod-emu --help` lists the options.
 
 To run it by hand, with the benchmark:
@@ -140,6 +151,7 @@ mode never swaps. `iio_daqiri_bench --check ramp` uses the same definition.
 | File | What for |
 |---|---|
 | `resources/socket-udp-loopback.yaml` | the socket engine on 127.0.0.1:25101, receiving from 127.0.0.1:25102 only: the loopback tests |
+| `resources/socket-udp-loopback-1472.yaml` | the same with `max_payload_size 1472` and 256 packet buffers: 1456-byte payloads for the exact-counter tests |
 | `resources/zcu102-socket.yaml` | the socket engine for the ADRV9002 + ZCU102 board (192.0.2.1) over its 10G link to the host (192.0.2.2), UDP port 4991 at both ends; its header explains the tuple rule of `local_addr` and `remote_addr` |
 | `resources/raw-flows-ibverbs.yaml` | parsed only, never started: two ibverbs queues and their flow rules, for `daqiri_engine_udp_endpoint` |
 | `resources/raw-sw-loopback-dpdk.yaml` | the DPDK engine's software loopback (no NIC), for `daqiri-probe-raw` (`CI/daqiri/README.md`) |
