@@ -503,6 +503,7 @@ static ssize_t dq_local_attr_read(
 {
 	struct iio_buffer_pdata *b;
 	enum dq_path path;
+	bool is_open;
 	ssize_t ret;
 
 	pthread_mutex_lock(&pdata->lock);
@@ -512,12 +513,13 @@ static ssize_t dq_local_attr_read(
 		pthread_mutex_unlock(&pdata->lock);
 		return ret;
 	}
+	/* Under the lock: once it is released, a close may free b */
+	is_open = b != NULL;
+	path = is_open ? b->path : DQ_PATH_TCP;
 	pthread_mutex_unlock(&pdata->lock);
 
 	/* Over TCP, or no stream open: what one would start with */
-	if (b)
-		path = b->path;
-	else if (dq_data_path(pdata, attr->iio.buf, &path))
+	if (!is_open && dq_data_path(pdata, attr->iio.buf, &path))
 		path = DQ_PATH_TCP;
 
 	return dq_attr_read_default(pdata, path, attr->name, dst, len);
