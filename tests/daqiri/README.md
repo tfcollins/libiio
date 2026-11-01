@@ -99,7 +99,9 @@ an emulator serving `emu:<xml>` (use an absolute path for the XML), with the
 arguments between `--emu-args` and `--` given to the emulator, and
 `IIOD_EMU_LOG` naming the file that collects the emulator's output, which the
 command may read. Set `IIOD_EMU` to the `iiod-emu` binary
-(`build-daqiri/iiod-emu/iiod-emu`). It refuses to run when the port is taken.
+(`build-daqiri/iiod-emu/iiod-emu`). It waits for the emulator's `Listening on
+port` line, and refuses to run when the port is taken (the emulator cannot
+bind it); it needs no `nc`.
 
 ## The reference server by hand
 

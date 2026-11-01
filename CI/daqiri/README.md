@@ -143,11 +143,13 @@ unless DAQIRI lives in a system prefix.
 
 `tests/daqiri/with_emu.sh <xml> <cmd...>` starts `$IIOD_EMU` (CMake passes the
 built `iiod-emu`) serving `emu:<xml>` on 127.0.0.1:30431, waits up to 10 s for
-it to listen, runs the command, stops the emulator and exits with the
-command's status. It refuses to run when the port is already taken, so it
-never tests against some other server, and prints the emulator's log only on
-failure. ctest serialises the tests that use it with `RESOURCE_LOCK
-iiod-emu-30431`.
+the emulator's `Listening on port` line, runs the command, stops the emulator
+and exits with the command's status. It refuses to run when the port is
+already taken (the emulator cannot bind it), so it never tests against some
+other server, and prints the emulator's log only on failure. It needs nothing
+but the shell, coreutils, grep and sed: the stock image of `tests.yml`, which
+runs the `daqiri-emu` tests too, has no `nc`. ctest serialises the tests that
+use it with `RESOURCE_LOCK iiod-emu-30431`.
 
 `-DWITH_EMU_BACKEND_DYNAMIC=OFF` builds the emu backend into `libiio.so`. As a
 module, `libiio-emu.so` calls the non-exported `iio_strndup`, and iiod-emu

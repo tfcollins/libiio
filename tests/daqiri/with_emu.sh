@@ -11,6 +11,10 @@
 # emulator's output, which it may read; the file goes when this script exits.
 # Exits with the command's status. The emulator's output is shown only when
 # something fails.
+#
+# The emulator says when it listens, and it cannot bind a port that another
+# server holds: this never tests against some other server, and needs no
+# more than the shell, coreutils, grep and sed.
 set -u
 
 PORT=30431
@@ -37,11 +41,6 @@ xml=$1
 shift
 emu=${IIOD_EMU:-iiod-emu}
 
-if nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
-	echo "$0: 127.0.0.1:$PORT is already in use; refusing to test against it" >&2
-	exit 1
-fi
-
 log=$(mktemp "${TMPDIR:-/tmp}/with_emu.XXXXXX") || exit 1
 # exec, so that $! is the emulator itself
 (eval "set -- $emu_args" && exec "$emu" -p "$PORT" "$@" "emu:$xml") >"$log" 2>&1 &
@@ -60,9 +59,12 @@ fail() {
 	exit 1
 }
 
-# Wait up to 10 s for the emulator to accept connections.
+# Wait up to 10 s for the emulator to listen: it prints this line, unbuffered,
+# once the port is bound, and the one below when another server has it.
 tries=0
-while ! nc -z 127.0.0.1 "$PORT" 2>/dev/null; do
+until grep -q "^Listening on port $PORT;" "$log"; do
+	grep -q "^Unable to bind port $PORT:" "$log" &&
+		fail "127.0.0.1:$PORT is already in use; refusing to test against it"
 	kill -0 "$pid" 2>/dev/null || fail "iiod-emu exited before listening"
 	tries=$((tries + 1))
 	[ "$tries" -ge 100 ] && fail "iiod-emu not listening on port $PORT after 10 s"
