@@ -94,7 +94,8 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
     # YAML), hence the second lock.
     if (IIOD_EMU_UDP)
         add_executable(test_daqiri_lifecycle test_daqiri_lifecycle.c)
-        target_link_libraries(test_daqiri_lifecycle PRIVATE iio)
+        target_link_libraries(test_daqiri_lifecycle PRIVATE iio
+                                                            Threads::Threads)
         target_include_directories(test_daqiri_lifecycle
                                    PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
         target_compile_definitions(test_daqiri_lifecycle PRIVATE TESTS_DEBUG)

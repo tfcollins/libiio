@@ -192,8 +192,9 @@ both on UDP port 4991; its header comments on these rules.
   it, before it returns the error. A refused setup fails the enable with the
   server's error and never falls back to TCP.
 - **Disable:** `DISABLE_BUFFER`. The server completes the datagram in
-  progress before it answers, and that datagram may still be on its way: the
-  receive thread goes on for 20 ms, then stops, and a block it had begun to
+  progress before it answers, and datagrams may still be on their way: the
+  receive thread goes on until the queue has delivered nothing for 20 ms,
+  500 ms after the answer at most, then stops, and a block it had begun to
   fill starts over with the next stream. If `DISABLE_BUFFER` fails (a board
   answers `-ETIMEDOUT` when its sender did not drain), it is sent once more
   100 ms later; if that fails too the buffer is closed on the server

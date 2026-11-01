@@ -47,6 +47,7 @@
 #include <errno.h>
 #include <iio/iio.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -948,6 +949,85 @@ out:
 	close(fd);
 }
 
+#define LATE_DATAGRAMS 12
+#define LATE_GAP_MS 5
+
+struct late_sender {
+	int fd;
+	int ret;
+};
+
+/* What keeps coming after DISABLE: LATE_DATAGRAMS datagrams of the stream,
+ * LATE_GAP_MS apart, some 55 ms of them */
+static void *send_late(void *d)
+{
+	const struct timespec gap = { .tv_nsec = LATE_GAP_MS * 1000000L };
+	struct late_sender *ls = d;
+	unsigned int i;
+
+	for (i = 0; !ls->ret && i < LATE_DATAGRAMS; i++) {
+		ls->ret = send_seq(ls->fd, i);
+		nanosleep(&gap, NULL);
+	}
+
+	return NULL;
+}
+
+/* After DISABLE_BUFFER the backend receives until the queue has been quiet
+ * for 20 ms (500 ms at most): datagrams 5 ms apart that go on for 55 ms
+ * after the answer all arrive. A fixed 20 ms would miss the later ones. */
+TEST_FUNCTION(drain_until_idle)
+{
+	const struct timespec head_start = { .tv_nsec = 7 * 1000000L };
+	struct late_sender ls = { .fd = -1 };
+	struct iio_block *b;
+	pthread_t thread;
+	unsigned int i, done = 0;
+	struct rx rx;
+	int ret;
+
+	ls.fd = sender_open();
+	TEST_ASSERT(ls.fd >= 0, "sender bound to 127.0.0.1:25102");
+	if (ls.fd < 0)
+		return;
+
+	memset(&rx, 0, sizeof(rx));
+	ret = rx_init(&rx, ctx_for(yaml), DEV_NAME, false);
+	if (!ret)
+		ret = rx_open_size(&rx, MAX_BLOCKS, PAYLOAD);
+	CHECK_EQ(ret, 0, "buffer with 4 blocks of one payload");
+	if (ret)
+		goto out;
+
+	CHECK_EQ(enqueue_all(&rx), 0, "enqueue 4");
+	CHECK_EQ(iio_buffer_stream_start(rx.stream), 0, "enable");
+
+	ret = pthread_create(&thread, NULL, send_late, &ls);
+	CHECK_EQ(ret, 0, "sender thread started");
+	if (ret)
+		goto out;
+
+	/* The first datagram or so before the disable, the rest after */
+	nanosleep(&head_start, NULL);
+	CHECK_EQ(iio_buffer_stream_stop(rx.stream), 0, "disable, while datagrams still come");
+	pthread_join(thread, NULL);
+	CHECK_EQ(ls.ret, 0, "12 datagrams sent, 5 ms apart");
+
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_packets"), LATE_DATAGRAMS,
+			"all 12 received: the disable drained until the queue was quiet");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_dropped_no_block"), LATE_DATAGRAMS - MAX_BLOCKS,
+			"8 for want of a block: received all the same");
+	for (i = 0; i < MAX_BLOCKS; i++) {
+		b = rx.blocks[i];
+		if (!iio_block_dequeue(b, true) && block_is(b, i))
+			done++;
+	}
+	CHECK_EQ(done, MAX_BLOCKS, "blocks 0 to 3 hold datagrams 0 to 3");
+out:
+	rx_destroy(&rx);
+	close(ls.fd);
+}
+
 /* The mock's log from byte <from> on, at most <len> - 1 bytes; the length of
  * the whole log in <total> */
 static size_t log_read(long from, char *buf, size_t len, long *total)
@@ -1153,6 +1233,7 @@ int main(int argc, char **argv)
 	RUN_TEST(refused_probe_udp);
 	RUN_TEST(data_smoke);
 	RUN_TEST(resync_without_block);
+	RUN_TEST(drain_until_idle);
 
 	if (!mock_log || !mock_log[0]) {
 		TEST_ASSERT(false, "DAQIRI_MOCK_LOG names the mock provider's log");

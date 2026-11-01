@@ -30,8 +30,9 @@
  *    it fails (a board answers -ETIMEDOUT when its framer did not drain).
  *    When it fails twice the buffer is closed (CLOSE_BUFFER) and the error
  *    returned: the board may still be streaming. Otherwise the poller keeps
- *    draining the queue for DQ_UDP_DRAIN_MS, since the last datagram may
- *    still be on its way when the answer comes, then stops.
+ *    draining the queue, since datagrams may still be on their way when the
+ *    answer comes, until the queue has delivered nothing for
+ *    DQ_UDP_DRAIN_IDLE_MS (DQ_UDP_DRAIN_MAX_MS at most), then stops.
  *
  * Receive path: one poller thread per open buffer drains the queue, runs
  * every datagram through the tracker (daqiri-udp-stream.h) and assembles the
@@ -126,8 +127,11 @@
 /* IPv4 and UDP headers: what the IP MTU does not leave to the datagram */
 #define DQ_UDP_IP_UDP_HDR 28
 
-/* After DISABLE_BUFFER the poller still receives the last datagram */
-#define DQ_UDP_DRAIN_MS 20
+/* After DISABLE_BUFFER the poller still receives what is on its way: until
+ * the queue has delivered nothing for this long, */
+#define DQ_UDP_DRAIN_IDLE_MS 20
+/* or this long after the answer at most */
+#define DQ_UDP_DRAIN_MAX_MS 500
 
 /* A DISABLE_BUFFER that failed is tried once more, this much later */
 #define DQ_UDP_DISABLE_RETRY_MS 100
@@ -172,8 +176,9 @@ struct dq_udp_buffer {
 	pthread_cond_t cond; /* a block left QUEUED/FILLING */
 	int wake_fd;	     /* eventfd: wakes the sleeping poller */
 	pthread_t thread;
-	bool running;	  /* the thread exists; only enable/close touch it */
-	atomic_bool stop; /* tells the poller to return */
+	bool running;	     /* the thread exists; only enable/close touch it */
+	atomic_bool stop;    /* tells the poller to return */
+	atomic_ullong rx_ns; /* when the queue last delivered a burst, monotonic */
 
 	bool cancelled;
 	int fatal; /* stream failure; every block fails with it */
@@ -260,6 +265,15 @@ const char *const dq_attr_names[] = {
 };
 
 const unsigned int dq_nb_attrs = DQ_ATTR_COUNT;
+
+static unsigned long long dq_now_ns(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+
+	return (unsigned long long)ts.tv_sec * 1000000000ULL + (unsigned long long)ts.tv_nsec;
+}
 
 static void dq_sleep_ms(unsigned int ms)
 {
@@ -629,6 +643,7 @@ static void *dq_udp_poller(void *d)
 			continue;
 		}
 
+		atomic_store(&v->rx_ns, dq_now_ns());
 		dq_udp_burst(v, &b);
 		dq_burst_free(&b);
 	}
@@ -656,6 +671,7 @@ static struct dq_udp_buffer *dq_udp_new(struct iio_buffer_pdata *buf, size_t sam
 	v->poll_ts.tv_sec = (time_t)(o->poll_us / 1000000);
 	v->poll_ts.tv_nsec = (long)(o->poll_us % 1000000) * 1000L;
 	atomic_init(&v->stop, true);
+	atomic_init(&v->rx_ns, 0ULL);
 	dq_udp_rx_init(&v->rx);
 
 	/* The device's own sample layout: copied as it comes, never swapped */
@@ -1113,6 +1129,26 @@ err_drop_setup:
 	return ret;
 }
 
+/* After a successful DISABLE_BUFFER: let the poller go on until the queue
+ * has delivered nothing for DQ_UDP_DRAIN_IDLE_MS since the answer or its last
+ * burst, whichever came later, but not past DQ_UDP_DRAIN_MAX_MS */
+static void dq_udp_drain(struct dq_udp_buffer *v)
+{
+	const unsigned long long idle = DQ_UDP_DRAIN_IDLE_MS * 1000000ULL;
+	const unsigned long long cap = DQ_UDP_DRAIN_MAX_MS * 1000000ULL;
+	unsigned long long start = dq_now_ns(), now, last, quiet_from;
+
+	for (;;) {
+		now = dq_now_ns();
+		last = atomic_load(&v->rx_ns);
+		quiet_from = last > start ? last : start;
+		if (now - quiet_from >= idle || now - start >= cap)
+			return;
+
+		dq_sleep_ms(1);
+	}
+}
+
 /* After DISABLE_BUFFER failed twice: the board may still be streaming, so
  * the buffer is closed rather than left half disabled */
 static void dq_udp_close_server(struct dq_udp_buffer *v, int err)
@@ -1174,9 +1210,9 @@ static int dq_udp_disable(struct dq_udp_buffer *v)
 	}
 
 	/* The board completes the datagram in progress before it answers;
-	 * it may still be on its way */
+	 * datagrams may still be on their way */
 	if (was_enabled)
-		dq_sleep_ms(DQ_UDP_DRAIN_MS);
+		dq_udp_drain(v);
 
 	dq_udp_rx_end(v);
 	v->enabled = false;
