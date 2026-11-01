@@ -151,9 +151,26 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
     # engine against iiod-emu --udp, the reference server (built on Linux
     # only), and against the plain emulator, which does not advertise it.
     if (IIOD_EMU_UDP)
+        # What the exact-counter tests stream: a copy of fmcomms2.xml next to
+        # a sample file of 4099 letters and digits, no whole number of
+        # samples, blocks or payloads, whose 1456-byte payloads all differ
+        # (the stock file repeats itself, so a block would not tell which
+        # datagram it holds), received with 1456-byte payloads, of which the
+        # kernel's default receive buffer holds some 90
+        set(UDP_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/udp-loopback)
+        string(
+            RANDOM
+            LENGTH 4099
+            RANDOM_SEED 2026 _udp_samples)
+        file(WRITE ${UDP_FIXTURE}/cf-ad9361-lpc_buf0.bin "${_udp_samples}")
+        configure_file(${XMLS}/fmcomms2.xml ${UDP_FIXTURE}/fmcomms2.xml
+                       COPYONLY)
+        set(UDP_LOOPBACK_YAML
+            ${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback-1472.yaml)
+
         # The blocks and counters against the emulator's oracle, case by
-        # case, each against an emulator with its own injection flags, which
-        # the test starts through with_emu.sh
+        # case, each against an emulator with its own flags, which the test
+        # starts through with_emu.sh
         add_executable(test_udp_loopback test_udp_loopback.c)
         target_link_libraries(test_udp_loopback PRIVATE iio)
         target_include_directories(test_udp_loopback
@@ -166,15 +183,15 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
             NAME daqiri_udp_loopback
             COMMAND
                 test_udp_loopback ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh
-                ${XMLS}/fmcomms2.xml ${XMLS}/cf-ad9361-lpc_buf0.bin
-                ${UDP_LOOPBACK_ORACLE})
+                ${UDP_FIXTURE}/fmcomms2.xml
+                ${UDP_FIXTURE}/cf-ad9361-lpc_buf0.bin ${UDP_LOOPBACK_ORACLE})
         set_tests_properties(
             daqiri_udp_loopback
             PROPERTIES
                 LABELS
                 daqiri-loopback
                 ENVIRONMENT
-                "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml;IIO_DAQIRI_YAML="
+                "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${UDP_LOOPBACK_YAML};IIO_DAQIRI_YAML="
                 RESOURCE_LOCK
                 "iiod-emu-30431;daqiri-udp-25101"
                 TIMEOUT
@@ -189,20 +206,21 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
         target_compile_definitions(test_udp_equivalence PRIVATE TESTS_DEBUG)
         add_dependencies(test_udp_equivalence iio-daqiri iiod-emu)
 
+        set(UDP_EQ_ORACLE ${CMAKE_CURRENT_BINARY_DIR}/udp_equivalence.json)
         add_test(
             NAME daqiri_udp_equivalence
             COMMAND
                 ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args --udp
-                --udp-pps 250 -- ${XMLS}/fmcomms2.xml
-                $<TARGET_FILE:test_udp_equivalence>
-                ${XMLS}/cf-ad9361-lpc_buf0.bin)
+                --udp-pps 250 --udp-count 36 --udp-json ${UDP_EQ_ORACLE} --
+                ${UDP_FIXTURE}/fmcomms2.xml $<TARGET_FILE:test_udp_equivalence>
+                ${UDP_FIXTURE}/cf-ad9361-lpc_buf0.bin ${UDP_EQ_ORACLE})
         set_tests_properties(
             daqiri_udp_equivalence
             PROPERTIES
                 LABELS
                 daqiri-loopback
                 ENVIRONMENT
-                "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml;IIO_DAQIRI_YAML="
+                "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${UDP_LOOPBACK_YAML};IIO_DAQIRI_YAML="
                 RESOURCE_LOCK
                 "iiod-emu-30431;daqiri-udp-25101"
                 TIMEOUT

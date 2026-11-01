@@ -5,78 +5,85 @@
  * Copyright (C) 2026 Analog Devices, Inc.
  *
  * UDP sample mode end to end: daqiri:127.0.0.1,data=udp over the DAQIRI
- * socket engine (DAQIRI_YAML: socket-udp-loopback.yaml, which receives on
+ * socket engine (DAQIRI_YAML: socket-udp-loopback-1472.yaml, which receives on
  * 127.0.0.1:25101 from 127.0.0.1:25102 only) against iiod-emu --udp, the
  * reference server, which sends from its default 127.0.0.1:25102.
  *
- * The emulator serves fmcomms2.xml. For cf-ad9361-lpc voltage0+voltage1
- * (4-byte samples) it answers the backend's 9200-byte limit with 9200-byte
- * payloads, cut from cf-ad9361-lpc_buf0.bin as an endless byte stream:
- * datagram s carries the file's bytes from (s * 9200) mod <file length> on,
- * wrapping at the end of the file, within a datagram too. A block of 9200
- * bytes is found to hold the payload of datagram s by comparing every byte
- * with the file, or to be all zero.
+ * The emulator serves a copy of fmcomms2.xml next to a sample file of its
+ * own (<sample.bin>, 4099 bytes, which ctest writes at configure time). For
+ * cf-ad9361-lpc voltage0+voltage1 (4-byte samples) it answers the backend's
+ * 1456-byte limit (the YAML's max_payload_size, 1472, less the header) with
+ * 1456-byte payloads, cut from the file as an endless byte stream: datagram s
+ * carries the file's bytes from (s * 1456) mod 4099 on, wrapping around at its
+ * end, within a datagram too. Every block is one payload, found to hold the
+ * payload of datagram s by comparing every byte with the file, or to be all
+ * zero; the payloads of the first MAX_SEQ datagrams all differ.
  *
  * Every case runs against an emulator of its own, which with_emu.sh starts
- * with the case's injection flags and --udp-json <oracle.json>. Without
- * --case this program is the driver that runs every case that way:
+ * with the case's flags and --udp-json <oracle.json>. Without --case this
+ * program is the driver that runs every case that way:
  *   test_udp_loopback <with_emu.sh> <xml> <sample.bin> <oracle.json>
  *   test_udp_loopback --case <name> <sample.bin> <oracle.json>
  *
- * A case queues 64 one-datagram blocks, enables, dequeues blocks in order and
- * queues each one again, then disables; the blocks that completed by then are
- * dequeued afterwards. At the disable the emulator writes its oracle: the
- * datagrams it sent (copies included), dropped, reordered (pairs, counted at
- * the late datagram) and duplicated (copies). The blocks must be what the
- * emulator's order of emission gives under the host's rules, and the counters
- * must match the oracle:
+ * Nothing is left to timing. The emulator ends the stream of an enable by
+ * itself after --udp-count datagram numbers, dropped ones included, and
+ * writes its oracle then: the datagrams it sent (copies included), dropped,
+ * reordered (pairs, counted at the late datagram) and duplicated (copies).
+ * A case queues blocks for every datagram it expects (no block is queued
+ * again), enables, waits for the oracle, dequeues exactly the blocks that the
+ * emulator's order of emission gives under the host's rules, waits until the
+ * backend has seen every datagram sent, and only then disables: nothing is in
+ * flight at DISABLE. A count stays below what the kernel's default receive
+ * buffer holds of these datagrams (some 90), so even a receive thread that
+ * runs late loses none, and every run is paced (--udp-pps 250) besides. The
+ * checks:
+ * - the oracle is the model's: sent, dropped, reordered, duplicated;
  * - every datagram sent arrived: rx_packets + late + duplicates == sent;
  * - late == reordered, duplicates == duplicated;
  * - lost == dropped less the drops past the last datagram sent, which the
- *   host cannot see: the sequence numbers 0 .. last are the ones sent once
- *   (sent - duplicated) and the dropped ones, the trailing drops the rest;
- * - a gap fails one block with lossy=0 and zero-fills one block per lost
- *   datagram with lossy=1, exactly.
- * The emulator is paced (--udp-pps) in every case: unpaced on loopback, a
- * stop that meets a full socket can leave a batch partly unsent. 250
- * datagrams per second leave the engine's receive thread some 50 ms of
- * delay before its socket fills (a dozen 9216-byte datagrams in the default
- * 208 KiB) and the kernel drops one (Udp RcvbufErrors in /proc/net/snmp,
- * which a failing case reports): at 1000 per second, a host with every core
- * busy did drop some.
+ *   host cannot see: the numbers 0 .. last were sent once (sent - duplicated)
+ *   or dropped, the trailing drops are the rest;
+ * - the blocks, byte for byte: a gap fails one block with lossy=0 and
+ *   zero-fills one block per lost datagram with lossy=1, exactly.
  */
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <iio/iio.h>
 #include <inttypes.h>
+#include <netinet/in.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "../../iiod-udp-stream.h"
 #include "test_framework.h"
 
 #define DEV_NAME "cf-ad9361-lpc"
 
-/* voltage0+voltage1: the YAML's 9216-byte buffers less the 16-byte header,
- * a multiple of 16 and of the 4-byte sample set */
-#define PAYLOAD 9200
+/* voltage0+voltage1: max_payload_size 1472 less the 16-byte header, a
+ * multiple of 16 and of the 4-byte sample set */
+#define PAYLOAD 1456
 #define NB_BLOCKS 64
-/* Blocks dequeued before the disable */
-#define RUN_BLOCKS 64
+
+#define LOCAL_PORT 25101  /* the YAML's local_addr */
+#define SENDER_PORT 25102 /* its remote_addr, the emulator's --udp-from */
 
 #define MAX_RECS 512
-/* Sequence numbers told apart by their payload: (s * PAYLOAD) mod the file
- * length must differ for all of them */
+/* Sequence numbers told apart by their payload; map_offsets() checks it */
 #define MAX_SEQ 1024
+/* The first bytes of the payloads that must all differ */
+#define KEY_LEN 16
 
 #define DEQUEUE_TIMEOUT_MS 3000
-#define WAIT_TIMEOUT_MS 3000
+#define WAIT_TIMEOUT_MS 10000
 
 /* A block, as dequeued or as expected: the datagram it holds (>= 0) or */
 #define BLK_EIO (-1)  /* dequeue returned -EIO */
@@ -99,8 +106,10 @@ struct oracle {
 
 /* What the emulator injects, for the model of its order of emission */
 struct inject {
+	unsigned long long count; /* --udp-count */
 	const long *drop_list;
 	unsigned int nb_drop;
+	long drop_every;
 	long reorder_window;
 	long dup_every;
 };
@@ -134,7 +143,7 @@ struct lb {
 static const char *yaml, *oracle_path;
 static uint8_t *file;
 static size_t file_len;
-static long *seq_at; /* by offset in the file: the datagram whose payload starts there */
+static size_t seq_off[MAX_SEQ]; /* where the payload of datagram s starts in the file */
 
 /* One at a time; too large for the stack */
 static struct lb lb;
@@ -194,58 +203,67 @@ static int read_file(const char *path, uint8_t **data, size_t *len)
 	return 0;
 }
 
-/* Which datagram's payload starts at which offset of the file; -EINVAL when
- * two of the first MAX_SEQ start at the same one */
+/* Byte <i> of the payload that starts at <off> */
+static uint8_t stream_byte(size_t off, size_t i)
+{
+	return file[(off + i) % file_len];
+}
+
+/* Where the payload of each of the first MAX_SEQ datagrams starts; -EINVAL
+ * unless their first KEY_LEN bytes all differ, so that a block tells which
+ * datagram it holds */
 static int map_offsets(void)
 {
-	size_t off;
-	long s;
+	unsigned int s, t;
+	size_t i;
 
-	seq_at = malloc(file_len * sizeof(*seq_at));
-	if (!seq_at)
-		return -ENOMEM;
-
-	for (off = 0; off < file_len; off++)
-		seq_at[off] = -1;
+	for (s = 0; s < MAX_SEQ; s++)
+		seq_off[s] = (size_t)((uint64_t)s * PAYLOAD % file_len);
 
 	for (s = 0; s < MAX_SEQ; s++) {
-		off = (size_t)((uint64_t)s * PAYLOAD % file_len);
-		if (seq_at[off] >= 0)
-			return -EINVAL;
-		seq_at[off] = s;
+		for (t = s + 1; t < MAX_SEQ; t++) {
+			for (i = 0; i < KEY_LEN; i++)
+				if (stream_byte(seq_off[s], i) != stream_byte(seq_off[t], i))
+					break;
+			if (i == KEY_LEN)
+				return -EINVAL;
+		}
 	}
 
 	return 0;
 }
 
-static bool stream_at(const uint8_t *p, size_t off)
+/* The payload of datagram <s>, into <out> */
+static void payload_of(unsigned int s, uint8_t *out)
 {
 	size_t i;
 
-	for (i = 0; i < PAYLOAD; i++) {
-		if (p[i] != file[(off + i) % file_len])
-			return false;
-	}
-
-	return true;
+	for (i = 0; i < PAYLOAD; i++)
+		out[i] = stream_byte(seq_off[s], i);
 }
 
 /* BLK_ZERO, the datagram whose payload the block is, or BLK_BAD */
 static long classify(const struct iio_block *block)
 {
 	const uint8_t *p = iio_block_start(block);
-	size_t off, i;
+	unsigned int s;
+	size_t i;
 
 	for (i = 0; i < PAYLOAD && !p[i]; i++)
 		;
 	if (i == PAYLOAD)
 		return BLK_ZERO;
 
-	/* The file has no period shorter than itself and a payload is longer:
-	 * at most one offset matches */
-	for (off = 0; off < file_len; off++) {
-		if (p[0] == file[off] && stream_at(p, off))
-			return seq_at[off] >= 0 ? seq_at[off] : BLK_BAD;
+	for (s = 0; s < MAX_SEQ; s++) {
+		for (i = 0; i < KEY_LEN && p[i] == stream_byte(seq_off[s], i); i++)
+			;
+		if (i < KEY_LEN)
+			continue;
+
+		/* The only candidate: all of it, then */
+		for (i = 0; i < PAYLOAD && p[i] == stream_byte(seq_off[s], i); i++)
+			;
+		return i == PAYLOAD ? (long)s : BLK_BAD;
 	}
 
 	return BLK_BAD;
@@ -285,7 +303,7 @@ static bool json_number(const char *json, const char *key, unsigned long long *v
 	return end != p && !errno;
 }
 
-/* The emulator replaces the file in one go at every disable */
+/* The emulator replaces the file in one go */
 static int oracle_read(struct oracle *o)
 {
 	uint8_t *data;
@@ -311,6 +329,21 @@ static int oracle_read(struct oracle *o)
 		ret = -EBADMSG;
 	free(json);
 
+	return ret;
+}
+
+/* The oracle that --udp-count makes the emulator write when the stream of
+ * this enable is over; the caller removed the last one */
+static int oracle_wait(struct oracle *o)
+{
+	struct timespec t0;
+	int ret;
+
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	while ((ret = oracle_read(o)) == -ENOENT && ms_since(&t0) < WAIT_TIMEOUT_MS)
+		sleep_ms(2);
+
+	CHECK_EQ(ret, 0, "oracle written when the count was reached");
 	if (!ret)
 		printf("  oracle: %llu sent, %llu dropped, %llu reordered, %llu duplicated\n",
 				o->sent, o->dropped, o->reordered, o->duplicated);
@@ -436,6 +469,58 @@ static void counters_read(struct counters *c)
 	c->last_error = attr_ll("daqiri_last_error");
 }
 
+/* Datagrams the backend has seen: delivered or not, late or duplicate */
+static long long arrived(const struct counters *c)
+{
+	return c->packets + c->late + c->duplicates;
+}
+
+/* Until the backend has seen <sent> datagrams in all; false after
+ * WAIT_TIMEOUT_MS, saying how many are missing */
+static bool wait_arrived(unsigned long long sent)
+{
+	struct counters c;
+	struct timespec t0;
+
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	for (;;) {
+		counters_read(&c);
+		if (arrived(&c) >= (long long)sent || ms_since(&t0) >= WAIT_TIMEOUT_MS)
+			break;
+		sleep_ms(1);
+	}
+
+	CHECK_EQ(arrived(&c), sent,
+			"every datagram sent arrived before the disable: rx_packets + late + duplicates");
+	if (arrived(&c) != (long long)sent)
+		missed((long long)sent - arrived(&c), sent);
+
+	return arrived(&c) == (long long)sent;
+}
+
+/* All the counters of the case at once */
+static void check_all(const struct counters *want)
+{
+	struct counters c;
+
+	counters_read(&c);
+	CHECK_EQ(c.packets, want->packets, "rx_packets");
+	CHECK_EQ(c.bytes, want->packets * PAYLOAD, "rx_bytes: their payloads");
+	CHECK_EQ(c.lost, want->lost, "lost_packets");
+	CHECK_EQ(c.gaps, want->gaps, "gap_events");
+	CHECK_EQ(c.dropped_no_block, want->dropped_no_block, "dropped_no_block");
+	CHECK_EQ(c.overruns, want->overruns, "overrun_events");
+	CHECK_EQ(c.foreign, 0, "foreign_packets");
+	CHECK_EQ(c.malformed, 0, "malformed");
+	CHECK_EQ(c.zero_filled, want->zero_filled, "zero_filled_bytes");
+	CHECK_EQ(c.late, want->late, "late_packets");
+	CHECK_EQ(c.duplicates, want->duplicates, "duplicate_packets");
+	CHECK_EQ(c.completed, want->completed, "blocks_completed");
+	CHECK_EQ(c.failed, want->failed, "blocks_failed");
+	CHECK_EQ(c.with_gaps, want->with_gaps, "blocks_with_gaps");
+	CHECK_EQ(c.last_error, want->last_error, "last_error");
+}
+
 static void lb_close(void)
 {
 	while (lb.nb_blocks)
@@ -532,7 +617,7 @@ static int lb_start(bool lossy, unsigned int queued)
 {
 	int ret;
 
-	/* What is there after the disable comes from this case */
+	/* What is there after the count is reached comes from this case */
 	remove(oracle_path);
 
 	ret = lb_open(lossy ? ",lossy=1" : "");
@@ -552,9 +637,9 @@ static void lb_record(long rec)
 }
 
 /* Dequeue the next block, waiting for it unless <nonblock>, and record what
- * it holds; queue it again with <requeue>. -EBUSY or -EPERM: the block is
- * still queued, or was not, and nothing is recorded. */
-static int lb_take(bool nonblock, bool requeue)
+ * it holds. -EBUSY or -EPERM: the block is still queued, or was not, and
+ * nothing is recorded. */
+static int lb_take(bool nonblock)
 {
 	struct iio_block *b = lb.blocks[lb.next];
 	int ret;
@@ -575,19 +660,19 @@ static int lb_take(bool nonblock, bool requeue)
 
 	lb.next = (lb.next + 1) % NB_BLOCKS;
 
-	return requeue ? iio_block_enqueue(b, 0, false) : 0;
+	return 0;
 }
 
-/* Dequeue <nb> blocks, each queued again; false on an error */
+/* Dequeue <nb> blocks; false on an error */
 static bool lb_run(unsigned int nb)
 {
 	unsigned int i;
 	int ret;
 
 	for (i = 0; i < nb; i++) {
-		ret = lb_take(false, true);
+		ret = lb_take(false);
 		if (ret) {
-			printf("  stream stopped after %u blocks: %d\n", lb.nb_recs, ret);
+			printf("  stopped after %u blocks: %d\n", lb.nb_recs, ret);
 			return false;
 		}
 	}
@@ -595,32 +680,36 @@ static bool lb_run(unsigned int nb)
 	return true;
 }
 
-/* Disable, then dequeue the blocks that completed meanwhile; false on an
- * error */
+/* No block completed beyond the ones dequeued */
+static void check_no_more(const char *when)
+{
+	char msg[96];
+	int ret;
+
+	ret = lb_take(true);
+	snprintf(msg, sizeof(msg), "no further block completed %s", when);
+	TEST_ASSERT(ret == -EBUSY || ret == -EPERM, msg);
+}
+
+/* Disable with nothing in flight; false on an error */
 static bool lb_stop(void)
 {
 	int ret;
 
+	check_no_more("before the disable");
 	ret = iio_buffer_stream_stop(lb.stream);
 	CHECK_EQ(ret, 0, "disabled");
-	if (ret)
-		return false;
+	check_no_more("after it");
 
-	while (!(ret = lb_take(true, false)))
-		;
-
-	return ret == -EBUSY || ret == -EPERM;
-}
-
-/* Datagrams the backend has seen: delivered or not, late or duplicate */
-static long long arrived(const struct counters *c)
-{
-	return c->packets + c->late + c->duplicates;
+	return !ret;
 }
 
 static bool dropped_by(const struct inject *inj, long seq)
 {
 	unsigned int i;
+
+	if (inj->drop_every && (seq + 1) % inj->drop_every == 0)
+		return true;
 
 	for (i = 0; i < inj->nb_drop; i++)
 		if (inj->drop_list[i] == seq)
@@ -629,43 +718,52 @@ static bool dropped_by(const struct inject *inj, long seq)
 	return false;
 }
 
-static unsigned int emit(const struct inject *inj, long seq, long *order, unsigned int n)
+static unsigned int emit(
+		const struct inject *inj, long seq, long *order, unsigned int n, struct oracle *m)
 {
 	if (n < MAX_RECS)
 		order[n++] = seq;
-	if (inj->dup_every && (seq + 1) % inj->dup_every == 0 && n < MAX_RECS)
-		order[n++] = seq;
+	m->sent++;
+	if (inj->dup_every && (seq + 1) % inj->dup_every == 0) {
+		if (n < MAX_RECS)
+			order[n++] = seq;
+		m->sent++;
+		m->duplicated++;
+	}
 
 	return n;
 }
 
 /*
- * The first <sent> datagrams the emulator sends with <inj>, in order (its
- * generator, iiod-emu/udp-stream.c): the dropped sequence numbers skipped; for
- * a reorder window k, datagram mk sent just before mk-1 unless one of them is
- * dropped; with dup_every n, datagrams n-1, 2n-1, ... sent twice in a row.
- * Pairs and copies go out whole. Returns the count, or 0 when <sent> ends in
- * the middle of one.
+ * The datagrams the emulator sends with <inj>, in order, and the oracle that
+ * goes with them (its generator, iiod-emu/udp-stream.c): the numbers 0 to
+ * count - 1; the dropped ones skipped; for a reorder window k, datagram mk
+ * sent just before mk-1 unless one of them is dropped or past the count; with
+ * dup_every n, datagrams n-1, 2n-1, ... sent twice in a row.
  */
-static unsigned int emission(const struct inject *inj, unsigned long long sent, long *order)
+static unsigned int emission(const struct inject *inj, long *order, struct oracle *m)
 {
-	long seq = 0, k = inj->reorder_window;
+	long seq = 0, k = inj->reorder_window, count = (long)inj->count;
 	unsigned int n = 0;
 
-	while (n < sent && n < MAX_RECS) {
+	memset(m, 0, sizeof(*m));
+
+	while (seq < count) {
 		if (dropped_by(inj, seq)) {
+			m->dropped++;
 			seq++;
-		} else if (k && seq % k == k - 1 && !dropped_by(inj, seq + 1)) {
-			n = emit(inj, seq + 1, order, n);
-			n = emit(inj, seq, order, n);
+		} else if (k && seq % k == k - 1 && seq + 1 < count && !dropped_by(inj, seq + 1)) {
+			n = emit(inj, seq + 1, order, n, m);
+			n = emit(inj, seq, order, n, m);
+			m->reordered++;
 			seq += 2;
 		} else {
-			n = emit(inj, seq, order, n);
+			n = emit(inj, seq, order, n, m);
 			seq++;
 		}
 	}
 
-	return n == sent ? n : 0;
+	return n;
 }
 
 /* What the host makes of datagrams arriving in <order> */
@@ -741,8 +839,8 @@ static void check_blocks(const struct expect *e)
 	CHECK_EQ(bad, 0, "every block as expected, its bytes those of the sample file");
 }
 
-/* One enable: one probe at open (whose stream never starts), then one setup
- * and one start, of the stream daqiri_stream_id names */
+/* One probe at open (whose stream never starts), then one setup and one start
+ * per enable, of the stream daqiri_stream_id names last */
 static void check_streams(unsigned int enables)
 {
 	char id[16];
@@ -758,7 +856,7 @@ static void check_streams(unsigned int enables)
 
 	for (ok = true, i = 0; i < st.nb_setup; i++)
 		ok = ok && st.payload[i] == PAYLOAD;
-	TEST_ASSERT(ok, "emulator: 9200-byte payloads");
+	TEST_ASSERT(ok, "emulator: 1456-byte payloads");
 
 	for (ok = true, i = 0; i < enables; i++)
 		ok = ok && st.started[i] == st.setup[i + 1] && st.started[i] != st.setup[0];
@@ -769,106 +867,76 @@ static void check_streams(unsigned int enables)
 			attr_str("daqiri_stream_id"), id, "daqiri_stream_id: the last one started");
 }
 
-/*
- * The counters against the oracle and the model of the blocks: the checks of
- * every case with injection only, with <e> the host's view of the emission
- * order. First that the drain after the disable saw everything sent: if not,
- * nothing else can match.
- */
-static void check_counters(const struct oracle *o, const struct expect *e)
-{
-	long long trailing, originals;
-	struct counters c;
-	long last = -1;
-	unsigned int i;
-
-	counters_read(&c);
-
-	CHECK_EQ(arrived(&c), o->sent,
-			"every datagram sent arrived: rx_packets + late + duplicates");
-	if (arrived(&c) != (long long)o->sent)
-		missed((long long)o->sent - arrived(&c), o->sent);
-
-	CHECK_EQ(c.duplicates, o->duplicated, "duplicate_packets == oracle duplicated");
-	CHECK_EQ(c.late, o->reordered, "late_packets == oracle reordered");
-
-	/* The last datagram the host received, from the blocks */
-	for (i = 0; i < lb.nb_recs; i++)
-		if (lb.recs[i] > last)
-			last = lb.recs[i];
-	CHECK_EQ(last, e->last_seq, "the last datagram received is the last one sent");
-
-	/* 0 .. last were sent once or dropped; the drops past last are the
-	 * trailing ones */
-	originals = (long long)o->sent - (long long)o->duplicated;
-	trailing = originals + (long long)o->dropped - 1 - last;
-	printf("  last datagram %ld, %lld trailing drops\n", last, trailing);
-	TEST_ASSERT(trailing >= 0, "oracle and blocks agree on the datagrams sent");
-	CHECK_EQ(c.lost, (long long)o->dropped - trailing,
-			"lost_packets == oracle dropped less the trailing drops");
-
-	CHECK_EQ(c.packets, e->packets, "rx_packets: accepted datagrams");
-	CHECK_EQ(c.bytes, c.packets * PAYLOAD, "rx_bytes: their payloads");
-	CHECK_EQ(c.lost, e->lost, "lost_packets: as the emission order gives");
-	CHECK_EQ(c.gaps, e->gaps, "gap_events");
-	CHECK_EQ(c.zero_filled, e->zeros * PAYLOAD, "zero_filled_bytes: exactly the lost payloads");
-	CHECK_EQ(c.completed, (long long)e->nb_blocks - e->eio, "blocks_completed");
-	CHECK_EQ(c.failed, e->eio, "blocks_failed: the -EIO blocks");
-	CHECK_EQ(c.with_gaps, e->eio + e->zeros, "blocks_with_gaps");
-	CHECK_EQ(c.last_error, e->eio ? -EIO : 0, "last_error");
-	CHECK_EQ(c.dropped_no_block, 0, "dropped_no_block: blocks always queued");
-	CHECK_EQ(c.overruns, 0, "overrun_events");
-	CHECK_EQ(c.foreign, 0, "foreign_packets");
-	CHECK_EQ(c.malformed, 0, "malformed");
-}
-
-/* Stream, stop, then check blocks and counters against the model of what
- * the emulator sent with <inj> */
-static void injection_case(const struct inject *inj, bool lossy, struct oracle *o)
+/* Stream, stop, then check the oracle, the blocks and the counters against the
+ * model of what the emulator sends with <inj>. Returns the trailing drops. */
+static long long injection_case(const struct inject *inj, bool lossy, struct oracle *o)
 {
 	static long order[MAX_RECS];
 	static struct expect e;
+	struct counters want;
+	long long trailing;
+	struct oracle m;
 	unsigned int nb;
 	int ret;
 
 	memset(o, 0, sizeof(*o));
 
+	nb = emission(inj, order, &m);
+	expect_blocks(order, nb, lossy, &e);
+	TEST_ASSERT(e.nb_blocks <= NB_BLOCKS, "the blocks queued suffice");
+
 	ret = lb_start(lossy, NB_BLOCKS);
 	CHECK_EQ(ret, 0,
 			lossy ? "lossy=1 buffer enabled with 64 blocks queued"
 			      : "buffer enabled with 64 blocks queued");
-	if (ret)
-		return;
+	if (ret || oracle_wait(o))
+		return -1;
 	TEST_ASSERT_STR_EQ(attr_str("daqiri_data_path"), "udp", "data path");
 
-	if (!lb_run(RUN_BLOCKS) || !lb_stop())
-		return;
+	CHECK_EQ(o->sent, m.sent, "oracle sent: as modelled");
+	CHECK_EQ(o->dropped, m.dropped, "oracle dropped: as modelled");
+	CHECK_EQ(o->reordered, m.reordered, "oracle reordered: as modelled");
+	CHECK_EQ(o->duplicated, m.duplicated, "oracle duplicated: as modelled");
 
-	ret = oracle_read(o);
-	CHECK_EQ(ret, 0, "oracle written at the disable");
-	if (ret)
-		return;
+	if (!lb_run(e.nb_blocks) || !wait_arrived(o->sent) || !lb_stop())
+		return -1;
 
-	nb = emission(inj, o->sent, order);
-	TEST_ASSERT(nb > 0, "the oracle's datagrams are whole pairs and copies");
-	if (!nb)
-		return;
-
-	expect_blocks(order, nb, lossy, &e);
 	check_blocks(&e);
-	check_counters(o, &e);
+	CHECK_EQ(lb.nb_recs ? lb.recs[lb.nb_recs - 1] : -1, e.last_seq,
+			"the last block holds the last datagram sent");
+
+	/* 0 .. last were sent once or dropped; the drops past last are the
+	 * trailing ones, which the host cannot see */
+	trailing = (long long)(o->sent - o->duplicated + o->dropped) - 1 - e.last_seq;
+	printf("  last datagram %lld, %lld trailing drops\n", e.last_seq, trailing);
+	TEST_ASSERT(trailing >= 0, "oracle and blocks agree on the datagrams sent");
+
+	memset(&want, 0, sizeof(want));
+	want.packets = e.packets;
+	want.lost = (long long)o->dropped - trailing;
+	want.gaps = e.gaps;
+	want.zero_filled = e.zeros * PAYLOAD;
+	want.late = (long long)o->reordered;
+	want.duplicates = (long long)o->duplicated;
+	want.completed = e.nb_blocks - e.eio;
+	want.failed = e.eio;
+	want.with_gaps = e.eio + e.zeros;
+	want.last_error = e.eio ? -EIO : 0;
+	CHECK_EQ(want.lost, e.lost, "lost: the oracle's arithmetic and the model agree");
+	check_all(&want);
 	check_streams(1);
+
+	return trailing;
 }
 
 /* Nothing injected: block k is datagram k */
 TEST_FUNCTION(clean)
 {
-	const struct inject inj = { 0 };
+	const struct inject inj = { .count = 64 };
 	struct oracle o;
 
 	injection_case(&inj, false, &o);
-	CHECK_EQ(o.dropped + o.reordered + o.duplicated, 0, "oracle: nothing injected");
-	TEST_ASSERT(o.sent >= RUN_BLOCKS, "oracle: at least 64 sent");
+	CHECK_EQ(o.sent, 64, "oracle: 64 sent");
 }
 
 static const long drops[] = { 5, 6, 20 };
@@ -876,7 +944,7 @@ static const long drops[] = { 5, 6, 20 };
 /* lossy=0: the gap of 5 and 6 fails one block, that of 20 another */
 TEST_FUNCTION(drop_list)
 {
-	const struct inject inj = { drops, 3, 0, 0 };
+	const struct inject inj = { .count = 64, .drop_list = drops, .nb_drop = 3 };
 	struct oracle o;
 
 	injection_case(&inj, false, &o);
@@ -892,7 +960,7 @@ TEST_FUNCTION(drop_list)
 /* lossy=1: blocks 5, 6 and 20 are all zero, every other block k datagram k */
 TEST_FUNCTION(drop_list_lossy)
 {
-	const struct inject inj = { drops, 3, 0, 0 };
+	const struct inject inj = { .count = 64, .drop_list = drops, .nb_drop = 3 };
 	struct oracle o;
 
 	injection_case(&inj, true, &o);
@@ -907,18 +975,34 @@ TEST_FUNCTION(drop_list_lossy)
 	}
 }
 
+/* --udp-drop-every 2: the odd numbers are dropped, 63 the last of them, past
+ * the last datagram sent (62): the host sees 31 of the 32 drops */
+TEST_FUNCTION(drop_every)
+{
+	const struct inject inj = { .count = 64, .drop_every = 2 };
+	unsigned int i, ok = 0;
+	long long trailing;
+	struct oracle o;
+
+	trailing = injection_case(&inj, false, &o);
+	CHECK_EQ(o.dropped, 32, "oracle: 32 dropped");
+	CHECK_EQ(trailing, 1, "one trailing drop: 63");
+	for (i = 0; i < lb.nb_recs; i++)
+		ok += lb.recs[i] == (i % 2 ? BLK_EIO : (long)i);
+	CHECK_EQ(ok, lb.nb_recs, "block k: datagram k for even k, -EIO for odd k");
+}
+
 /* --udp-reorder-window 3: 3 before 2, 6 before 5, ... Each pair fails the
  * block of the late datagram's place (a gap of one, then the late one takes
  * the loss back): block k is datagram k, or -EIO for k = 3m + 2 */
 TEST_FUNCTION(reorder)
 {
-	const struct inject inj = { NULL, 0, 3, 0 };
+	const struct inject inj = { .count = 64, .reorder_window = 3 };
 	unsigned int i, ok = 0;
 	struct oracle o;
 
 	injection_case(&inj, false, &o);
-	TEST_ASSERT(o.reordered >= 20, "oracle: at least 20 pairs reordered");
-	CHECK_EQ(o.dropped + o.duplicated, 0, "oracle: nothing dropped or duplicated");
+	CHECK_EQ(o.reordered, 21, "oracle: 21 pairs reordered");
 	for (i = 0; i < lb.nb_recs; i++)
 		ok += lb.recs[i] == (i % 3 == 2 ? BLK_EIO : (long)i);
 	CHECK_EQ(ok, lb.nb_recs, "block k: -EIO where k = 3m + 2, datagram k elsewhere");
@@ -927,92 +1011,127 @@ TEST_FUNCTION(reorder)
 /* --udp-dup-every 8: 7, 15, 23, ... sent twice; the copies are dropped */
 TEST_FUNCTION(duplicate)
 {
-	const struct inject inj = { NULL, 0, 0, 8 };
+	const struct inject inj = { .count = 64, .dup_every = 8 };
 	unsigned int i, ok = 0;
 	struct oracle o;
 
 	injection_case(&inj, false, &o);
-	CHECK_EQ(o.dropped + o.reordered, 0, "oracle: nothing dropped or reordered");
-	if (lb.nb_recs)
-		CHECK_EQ(o.duplicated, (lb.recs[lb.nb_recs - 1] + 1) / 8,
-				"oracle: one copy of every 8th datagram sent");
+	CHECK_EQ(o.duplicated, 8, "oracle: one copy of each of 7, 15, ..., 63");
 	for (i = 0; i < lb.nb_recs; i++)
 		ok += lb.recs[i] == (long)i;
 	CHECK_EQ(ok, lb.nb_recs, "block k is datagram k: no copy delivered");
 }
 
+/* Datagram <seq> of the stream <stream_id>, as the emulator would send it,
+ * from where it sends (the engine takes nothing from elsewhere) */
+static int send_continuation(uint32_t stream_id, uint64_t seq)
+{
+	struct sockaddr_in from = {
+		.sin_family = AF_INET,
+		.sin_port = htons(SENDER_PORT),
+		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+	};
+	struct sockaddr_in to = {
+		.sin_family = AF_INET,
+		.sin_port = htons(LOCAL_PORT),
+		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+	};
+	const struct iiod_udp_stream_hdr hdr = {
+		.version = IIOD_UDP_STREAM_VERSION,
+		.payload_length = PAYLOAD,
+		.stream_id = stream_id,
+		.sequence = seq,
+	};
+	uint8_t dgram[IIOD_UDP_STREAM_HDR_LEN + PAYLOAD];
+	int fd, one = 1, ret = 0;
+
+	iiod_udp_stream_hdr_pack(&hdr, dgram);
+	payload_of((unsigned int)seq, dgram + IIOD_UDP_STREAM_HDR_LEN);
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0)
+		return -errno;
+
+	/* The emulator's socket holds the address too */
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) ||
+			bind(fd, (struct sockaddr *)&from, sizeof(from)) ||
+			sendto(fd, dgram, sizeof(dgram), 0, (struct sockaddr *)&to, sizeof(to)) !=
+					sizeof(dgram))
+		ret = -errno;
+	close(fd);
+
+	return ret;
+}
+
+#define OVERRUN_COUNT 12
+
 /*
- * A host overrun at --udp-pps 100: two blocks queued and not dequeued, so
- * datagrams 0 and 1 fill them and the next ones find no block. Once three are
- * dropped, the 62 other blocks are queued, then the first two dequeued. The
- * next datagram that finds a block, F, follows a gap of unknown size: with
- * lossy=0 that block fails with -EIO and F fills the next; with lossy=1 F
- * fills it, flagged, not zero-filled. Blocks then follow F in order. Nothing
- * is lost on the wire, so every datagram from 2 to F - 1 was dropped for want
- * of a block, one overrun.
+ * A host overrun, made exact by the count: two blocks queued, and the
+ * emulator's whole stream, 12 datagrams, goes by before the consumer dequeues
+ * anything. Datagrams 0 and 1 fill the blocks, 2 to 11 find none: 10 dropped,
+ * one overrun event. The consumer then queues 4 more blocks and the stream
+ * goes on with datagrams 12 and 13, which the test sends in its place (the
+ * stream ID from daqiri_stream_id, the payloads from the sample file): the
+ * first block that 12 finds follows a gap of unknown size. With lossy=0 it
+ * fails with -EIO and 12 and 13 fill the next two; with lossy=1, 12 fills it,
+ * flagged, not zero-filled, and 13 the next.
  */
 static void slow_consumer_case(bool lossy)
 {
-	unsigned int i, f_at = lossy ? 2 : 3, ok = 0;
-	struct counters c;
-	struct timespec t0;
+	struct counters want;
+	unsigned long sid;
 	struct oracle o;
-	long f;
+	char *end;
 	int ret;
 
 	ret = lb_start(lossy, 2);
 	CHECK_EQ(ret, 0, "buffer enabled with 2 blocks queued");
-	if (ret)
+	if (ret || oracle_wait(&o))
 		return;
-
-	clock_gettime(CLOCK_MONOTONIC, &t0);
-	while (attr_ll("daqiri_rx_dropped_no_block") < 3 && ms_since(&t0) < WAIT_TIMEOUT_MS)
-		sleep_ms(1);
-	TEST_ASSERT(attr_ll("daqiri_rx_dropped_no_block") >= 3, "datagrams dropped: no block");
-	CHECK_EQ(attr_ll("daqiri_rx_overrun_events"), 1, "one overrun event, not one per datagram");
-
-	ret = lb_enqueue(2, NB_BLOCKS - 2);
-	CHECK_EQ(ret, 0, "the 62 other blocks queued");
-	if (ret || lb_take(false, true) || lb_take(false, true) || !lb_run(16) || !lb_stop())
-		return;
-
-	ret = oracle_read(&o);
-	CHECK_EQ(ret, 0, "oracle written at the disable");
-	if (ret)
-		return;
+	CHECK_EQ(o.sent, OVERRUN_COUNT, "oracle: 12 sent");
 	CHECK_EQ(o.dropped + o.reordered + o.duplicated, 0, "oracle: nothing injected");
-
-	TEST_ASSERT(lb.nb_recs > f_at + 1, "blocks after the overrun");
-	if (lb.nb_recs <= f_at + 1)
+	if (!wait_arrived(o.sent))
 		return;
 
+	CHECK_EQ(attr_ll("daqiri_rx_dropped_no_block"), OVERRUN_COUNT - 2,
+			"datagrams 2 to 11 dropped: no block");
+	CHECK_EQ(attr_ll("daqiri_rx_overrun_events"), 1, "one overrun event, not one per datagram");
+	if (lb_take(true) || lb_take(true))
+		return;
 	CHECK_EQ(lb.recs[0], 0, "block 0: datagram 0");
 	CHECK_EQ(lb.recs[1], 1, "block 1: datagram 1");
-	if (!lossy)
-		CHECK_EQ(lb.recs[2], BLK_EIO, "block 2: -EIO, the overrun");
-	f = lb.recs[f_at];
-	printf("  first datagram after the overrun: %ld\n", f);
-	TEST_ASSERT(f > 4, "datagrams after the first ones dropped");
-	for (i = f_at; i < lb.nb_recs; i++)
-		ok += lb.recs[i] == f + (long)(i - f_at);
-	CHECK_EQ(ok, lb.nb_recs - f_at, "then every datagram from F on, in order");
 
-	counters_read(&c);
-	CHECK_EQ(arrived(&c), o.sent, "every datagram sent arrived");
-	if (arrived(&c) != (long long)o.sent)
-		missed((long long)o.sent - arrived(&c), o.sent);
-	CHECK_EQ(c.packets, o.sent, "rx_packets: none lost, late or duplicate");
-	CHECK_EQ(c.lost, 0, "lost_packets: nothing lost on the wire");
-	CHECK_EQ(c.gaps, 0, "gap_events: no sequence gap");
-	CHECK_EQ(c.dropped_no_block, f - 2, "dropped_no_block: datagrams 2 to F - 1");
-	CHECK_EQ(c.dropped_no_block + lb.nb_recs - (lossy ? 0 : 1), c.packets,
-			"each datagram dropped or in a block");
-	CHECK_EQ(c.overruns, 1, "overrun_events: one");
-	CHECK_EQ(c.zero_filled, 0, "zero_filled_bytes: an overrun is not filled");
-	CHECK_EQ(c.completed, lb.nb_recs - (lossy ? 0 : 1), "blocks_completed");
-	CHECK_EQ(c.failed, lossy ? 0 : 1, "blocks_failed: the -EIO block");
-	CHECK_EQ(c.with_gaps, 1, "blocks_with_gaps: the overrun's block");
-	CHECK_EQ(c.last_error, lossy ? 0 : -EIO, "last_error");
+	ret = lb_enqueue(2, 4);
+	CHECK_EQ(ret, 0, "4 more blocks queued");
+	errno = 0;
+	sid = strtoul(attr_str("daqiri_stream_id"), &end, 16);
+	TEST_ASSERT(!errno && !*end, "daqiri_stream_id read");
+	if (ret || errno || *end)
+		return;
+	CHECK_EQ(send_continuation((uint32_t)sid, OVERRUN_COUNT), 0, "datagram 12 sent");
+	CHECK_EQ(send_continuation((uint32_t)sid, OVERRUN_COUNT + 1), 0, "datagram 13 sent");
+
+	if (!lb_run(lossy ? 2 : 3) || !wait_arrived(OVERRUN_COUNT + 2) || !lb_stop())
+		return;
+
+	if (lossy) {
+		CHECK_EQ(lb.recs[2], OVERRUN_COUNT, "block 2: datagram 12, whole, flagged");
+		CHECK_EQ(lb.recs[3], OVERRUN_COUNT + 1, "block 3: datagram 13");
+	} else {
+		CHECK_EQ(lb.recs[2], BLK_EIO, "block 2: -EIO, the overrun");
+		CHECK_EQ(lb.recs[3], OVERRUN_COUNT, "block 3: datagram 12");
+		CHECK_EQ(lb.recs[4], OVERRUN_COUNT + 1, "block 4: datagram 13");
+	}
+
+	memset(&want, 0, sizeof(want));
+	want.packets = OVERRUN_COUNT + 2;
+	want.dropped_no_block = OVERRUN_COUNT - 2;
+	want.overruns = 1;
+	want.completed = 4;
+	want.failed = lossy ? 0 : 1;
+	want.with_gaps = 1;
+	want.last_error = lossy ? 0 : -EIO;
+	check_all(&want);
 	check_streams(1);
 }
 
@@ -1026,66 +1145,57 @@ TEST_FUNCTION(slow_consumer_lossy)
 	slow_consumer_case(true);
 }
 
+#define BURST 32
+
 /*
- * Two bursts with 500 ms of silence in between: enable, 32 blocks, disable,
- * wait, enable again, 32 blocks, disable. The second enable has a setup of its
- * own: another stream ID, the sequence from 0, and the payloads from the start
- * of the file again. The blocks still queued at the first disable take the
- * second burst; the counters add up over both.
+ * Two bursts of 32 datagrams with 500 ms of silence in between: enable, 32
+ * blocks, disable, wait, enable again, 32 blocks, disable. The second enable
+ * has a setup of its own: another stream ID, the sequence from 0, and the
+ * payloads from the start of the file again. The blocks still queued at the
+ * first disable take the second burst; the counters add up over both.
  */
 TEST_FUNCTION(burst_gap)
 {
-	unsigned int i, first, ok = 0;
 	char id1[16] = "";
+	struct counters want;
+	unsigned int i, ok = 0;
 	struct oracle o1, o2;
-	struct counters c;
 	int ret;
 
 	ret = lb_start(false, NB_BLOCKS);
 	CHECK_EQ(ret, 0, "buffer enabled with 64 blocks queued");
-	if (ret || !lb_run(32) || !lb_stop())
+	if (ret || oracle_wait(&o1))
 		return;
-
-	/* The emulator rewrites the oracle at every disable */
-	ret = oracle_read(&o1);
-	CHECK_EQ(ret, 0, "oracle of the first burst");
-	if (ret)
+	CHECK_EQ(o1.sent, BURST, "first burst: 32 sent");
+	if (!lb_run(BURST) || !wait_arrived(BURST) || !lb_stop())
 		return;
-	first = lb.nb_recs;
-	CHECK_EQ(first, o1.sent, "first burst: one block per datagram sent");
 	snprintf(id1, sizeof(id1), "%s", attr_str("daqiri_stream_id"));
 
+	/* The disable wrote it again: the next one is the second burst's */
+	remove(oracle_path);
 	sleep_ms(500);
 
 	ret = iio_buffer_stream_start(lb.stream);
 	CHECK_EQ(ret, 0, "enabled again after 500 ms");
-	if (ret || !lb_run(32) || !lb_stop())
+	if (ret || oracle_wait(&o2))
 		return;
-
-	ret = oracle_read(&o2);
-	CHECK_EQ(ret, 0, "oracle of the second burst");
-	if (ret)
-		return;
+	CHECK_EQ(o2.sent, BURST, "second burst: 32 sent");
 	CHECK_EQ(o1.dropped + o1.reordered + o1.duplicated + o2.dropped + o2.reordered +
 					o2.duplicated,
 			0, "oracles: nothing injected");
-	CHECK_EQ(lb.nb_recs - first, o2.sent, "second burst: one block per datagram sent");
+	if (!lb_run(BURST) || !wait_arrived(2 * BURST) || !lb_stop())
+		return;
 	TEST_ASSERT(strcmp(attr_str("daqiri_stream_id"), id1), "a new stream ID");
 
 	for (i = 0; i < lb.nb_recs; i++)
-		ok += lb.recs[i] == (long)(i < first ? i : i - first);
+		ok += lb.recs[i] == (long)(i < BURST ? i : i - BURST);
+	CHECK_EQ(lb.nb_recs, 2 * BURST, "64 blocks");
 	CHECK_EQ(ok, lb.nb_recs, "each burst: datagrams 0, 1, 2, ... in order");
 
-	counters_read(&c);
-	CHECK_EQ(arrived(&c), o1.sent + o2.sent, "every datagram sent arrived");
-	if (arrived(&c) != (long long)(o1.sent + o2.sent))
-		missed((long long)(o1.sent + o2.sent) - arrived(&c), o1.sent + o2.sent);
-	CHECK_EQ(c.packets, o1.sent + o2.sent, "rx_packets: both bursts");
-	CHECK_EQ(c.lost, 0, "lost_packets: the sequence restart is no gap");
-	CHECK_EQ(c.gaps, 0, "gap_events");
-	CHECK_EQ(c.late + c.duplicates, 0, "nothing late or duplicate");
-	CHECK_EQ(c.completed, lb.nb_recs, "blocks_completed");
-	CHECK_EQ(c.failed + c.dropped_no_block, 0, "no block failed, nothing dropped");
+	memset(&want, 0, sizeof(want));
+	want.packets = 2 * BURST;
+	want.completed = 2 * BURST;
+	check_all(&want);
 	check_streams(2);
 }
 
@@ -1093,19 +1203,25 @@ struct lb_case {
 	const char *name;
 	void (*run)(void);
 	/* The emulator's options after --udp */
-	const char *const flags[6];
+	const char *const flags[8];
 };
 
 static const struct lb_case cases[] = {
-	{ "clean", test_clean, { "--udp-pps", "250" } },
-	{ "drop_list", test_drop_list, { "--udp-pps", "250", "--udp-drop-list", "5,6,20" } },
+	{ "clean", test_clean, { "--udp-pps", "250", "--udp-count", "64" } },
+	{ "drop_list", test_drop_list,
+			{ "--udp-pps", "250", "--udp-count", "64", "--udp-drop-list", "5,6,20" } },
 	{ "drop_list_lossy", test_drop_list_lossy,
-			{ "--udp-pps", "250", "--udp-drop-list", "5,6,20" } },
-	{ "reorder", test_reorder, { "--udp-pps", "250", "--udp-reorder-window", "3" } },
-	{ "duplicate", test_duplicate, { "--udp-pps", "250", "--udp-dup-every", "8" } },
-	{ "slow_consumer", test_slow_consumer, { "--udp-pps", "100" } },
-	{ "slow_consumer_lossy", test_slow_consumer_lossy, { "--udp-pps", "100" } },
-	{ "burst_gap", test_burst_gap, { "--udp-pps", "250" } },
+			{ "--udp-pps", "250", "--udp-count", "64", "--udp-drop-list", "5,6,20" } },
+	{ "drop_every", test_drop_every,
+			{ "--udp-pps", "250", "--udp-count", "64", "--udp-drop-every", "2" } },
+	{ "reorder", test_reorder,
+			{ "--udp-pps", "250", "--udp-count", "64", "--udp-reorder-window", "3" } },
+	{ "duplicate", test_duplicate,
+			{ "--udp-pps", "250", "--udp-count", "64", "--udp-dup-every", "8" } },
+	{ "slow_consumer", test_slow_consumer, { "--udp-pps", "250", "--udp-count", "12" } },
+	{ "slow_consumer_lossy", test_slow_consumer_lossy,
+			{ "--udp-pps", "250", "--udp-count", "12" } },
+	{ "burst_gap", test_burst_gap, { "--udp-pps", "250", "--udp-count", "32" } },
 };
 
 #define NB_CASES (sizeof(cases) / sizeof(cases[0]))
@@ -1118,7 +1234,7 @@ static int run_case(const char *name)
 
 	yaml = getenv("DAQIRI_YAML");
 	if (!yaml || !yaml[0]) {
-		printf("DAQIRI_YAML must be the path of socket-udp-loopback.yaml\n");
+		printf("DAQIRI_YAML must be the path of socket-udp-loopback-1472.yaml\n");
 		return 1;
 	}
 
@@ -1131,7 +1247,7 @@ static int run_case(const char *name)
 
 	ret = map_offsets();
 	if (ret) {
-		printf("The sample file cannot tell %d datagrams apart: %d\n", MAX_SEQ, ret);
+		printf("The sample file does not tell %d datagrams apart: %d\n", MAX_SEQ, ret);
 		return 1;
 	}
 
@@ -1229,7 +1345,6 @@ int main(int argc, char **argv)
 		}
 
 		ret = run_case(argv[2]);
-		free(seq_at);
 		free(file);
 		return ret;
 	}

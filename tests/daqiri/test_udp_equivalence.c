@@ -7,18 +7,23 @@
  * The same emulated device and mask streamed twice from one iiod-emu --udp:
  * once over TCP (daqiri:...,data=tcp, the iiod binary protocol) and once in
  * UDP sample mode (data=udp, through the DAQIRI socket engine, DAQIRI_YAML:
- * socket-udp-loopback.yaml). Both paths serve the sample file as an endless
- * byte stream: the captures must be the same bytes, the file repeated.
+ * socket-udp-loopback-1472.yaml). Both paths serve the sample file as an
+ * endless byte stream: the captures must be the same bytes, the file
+ * repeated.
  *
- * cf-ad9361-lpc voltage0+voltage1 of fmcomms2.xml, whose
- * cf-ad9361-lpc_buf0.bin is 2019 bytes: no whole number of 4-byte samples,
- * of 2016-byte blocks or of 9200-byte datagram payloads, so the stream wraps
- * in the middle of samples, blocks and datagrams. Blocks are 2016 bytes: the
- * emulator's TCP path wraps the file at most once per block, so a block must
- * not be longer than the file. The captures are aligned on the file's first
- * bytes and compared over 32 cycles of the file or so, at least 3.
+ * cf-ad9361-lpc voltage0+voltage1 of a copy of fmcomms2.xml, whose
+ * cf-ad9361-lpc_buf0.bin (<sample.bin>, which ctest writes) is 4099 bytes: no
+ * whole number of 4-byte samples, of 2016-byte blocks or of 1456-byte
+ * payloads, so the stream wraps in the middle of samples, blocks and
+ * datagrams. Blocks are 2016 bytes: the emulator's TCP path wraps the file at
+ * most once per block, so a block must not be longer than the file. 26 of
+ * them hold 36 payloads exactly: the emulator runs with --udp-count 36, the
+ * UDP capture queues the 26 blocks at once, waits for the oracle and until
+ * the backend has seen the 36 datagrams, and only then disables, with nothing
+ * in flight. The captures are aligned on the file's first bytes and compared
+ * over 12 cycles of the file or so, at least 3.
  *
- * Usage: test_udp_equivalence <sample.bin>
+ * Usage: test_udp_equivalence <sample.bin> <oracle.json>
  */
 
 #include <errno.h>
@@ -28,16 +33,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "test_framework.h"
 
 #define DEV_NAME "cf-ad9361-lpc"
 #define BLOCK_SIZE 2016 /* 504 samples */
-#define NB_BLOCKS 16
-#define NB_DEQUEUES 32
+#define NB_BLOCKS 26	/* at most: the TCP capture queues 16 */
+#define TCP_BLOCKS 16
+#define NB_DEQUEUES 26
 #define STREAM_LEN (NB_DEQUEUES * BLOCK_SIZE)
+#define UDP_COUNT 36 /* --udp-count: 36 payloads of 1456 bytes, 26 blocks */
 #define ALIGN_LEN 64
 #define TIMEOUT_MS 3000
+#define WAIT_TIMEOUT_MS 10000
 
 /* CHECK_EQ() evaluates <actual> again to print it: evaluate once */
 #define CHECK_EQ(actual, expected, message) \
@@ -48,10 +57,12 @@
 
 static uint8_t *ref;
 static size_t ref_len;
+static const char *oracle_path;
 
 struct capture {
 	char data_path[16];
 	long long lost, dropped_no_block, failed;
+	long long sent, arrived; /* UDP: the oracle's, and what the backend saw */
 };
 
 static int read_file(const char *path)
@@ -93,12 +104,69 @@ static long long attr_ll(const struct iio_buffer *buf, const char *name)
 	return val;
 }
 
+static long ms_since(const struct timespec *t0)
+{
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+
+	return (long)(now.tv_sec - t0->tv_sec) * 1000 + (now.tv_nsec - t0->tv_nsec) / 1000000;
+}
+
+static void sleep_ms(long ms)
+{
+	struct timespec ts = { .tv_sec = ms / 1000, .tv_nsec = (ms % 1000) * 1000000L };
+
+	nanosleep(&ts, NULL);
+}
+
+/* "sent" of the oracle the emulator writes once --udp-count ended the
+ * stream, waiting for it; -1 if it does not come */
+static long long oracle_sent(void)
+{
+	char json[512], *p;
+	struct timespec t0;
+	size_t len = 0;
+	FILE *f;
+
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	while (!(f = fopen(oracle_path, "r")) && ms_since(&t0) < WAIT_TIMEOUT_MS)
+		sleep_ms(2);
+	if (f) {
+		len = fread(json, 1, sizeof(json) - 1, f);
+		fclose(f);
+	}
+	json[len] = '\0';
+
+	p = strstr(json, "\"sent\":");
+
+	return p ? strtoll(p + strlen("\"sent\":"), NULL, 10) : -1;
+}
+
+/* Until the backend has seen <sent> datagrams */
+static long long wait_arrived(const struct iio_buffer *buf, long long sent)
+{
+	struct timespec t0;
+	long long n;
+
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	do {
+		n = attr_ll(buf, "daqiri_rx_packets") + attr_ll(buf, "daqiri_rx_late_packets") +
+		    attr_ll(buf, "daqiri_rx_duplicate_packets");
+		if (n >= sent)
+			break;
+		sleep_ms(1);
+	} while (ms_since(&t0) < WAIT_TIMEOUT_MS);
+
+	return n;
+}
+
 /* Stream NB_DEQUEUES blocks of voltage0+voltage1 through <uri> into <out>,
- * then disable. With <requeue_all> every block is queued again, so that UDP
- * datagrams that come before the disable still find one; otherwise nothing is
- * left in flight once the last block is in: the TCP path's server would wait
- * for its blocks after the disable. */
-static int capture(const char *uri, bool requeue_all, uint8_t *out, struct capture *cap)
+ * with <nb_blocks> queued from the start and nothing in flight once the last
+ * block is in: a block is queued again only while more are to come, and with
+ * <udp> the disable waits until every datagram the emulator sent arrived */
+static int capture(const char *uri, unsigned int nb_blocks, bool udp, uint8_t *out,
+		struct capture *cap)
 {
 	static const char *const chans[] = { "voltage0", "voltage1" };
 	struct iio_block *blocks[NB_BLOCKS], *block;
@@ -150,7 +218,7 @@ static int capture(const char *uri, bool requeue_all, uint8_t *out, struct captu
 	if (!attr || iio_attr_read_raw(attr, cap->data_path, sizeof(cap->data_path)) <= 0)
 		snprintf(cap->data_path, sizeof(cap->data_path), "?");
 
-	while (nb < NB_BLOCKS) {
+	while (nb < nb_blocks) {
 		block = iio_buffer_stream_create_block(stream, BLOCK_SIZE);
 		ret = iio_err(block);
 		if (ret)
@@ -162,18 +230,26 @@ static int capture(const char *uri, bool requeue_all, uint8_t *out, struct captu
 			goto out;
 	}
 
+	if (udp)
+		remove(oracle_path);
+
 	ret = iio_buffer_stream_start(stream);
 	for (i = 0; !ret && i < NB_DEQUEUES; i++) {
-		ret = iio_block_dequeue(blocks[i % NB_BLOCKS], false);
+		ret = iio_block_dequeue(blocks[i % nb_blocks], false);
 		if (!ret) {
-			memcpy(out + (size_t)i * BLOCK_SIZE, iio_block_start(blocks[i % NB_BLOCKS]),
+			memcpy(out + (size_t)i * BLOCK_SIZE, iio_block_start(blocks[i % nb_blocks]),
 					BLOCK_SIZE);
-			if (requeue_all || i + NB_BLOCKS < NB_DEQUEUES)
-				ret = iio_block_enqueue(blocks[i % NB_BLOCKS], 0, false);
+			if (i + nb_blocks < NB_DEQUEUES)
+				ret = iio_block_enqueue(blocks[i % nb_blocks], 0, false);
 		}
 	}
 	if (ret)
 		printf("  %s: block %u: %d\n", uri, i, ret);
+
+	if (!ret && udp) {
+		cap->sent = oracle_sent();
+		cap->arrived = wait_arrived(buf, cap->sent);
+	}
 	if (!ret)
 		ret = iio_buffer_stream_stop(stream);
 
@@ -234,15 +310,17 @@ TEST_FUNCTION(tcp_and_udp)
 	memset(s_tcp, 0xa5, STREAM_LEN);
 	memset(s_udp, 0x5a, STREAM_LEN);
 
-	ret = capture("daqiri:127.0.0.1,data=tcp", false, s_tcp, &tcp);
-	CHECK_EQ(ret, 0, "32 blocks over TCP");
+	ret = capture("daqiri:127.0.0.1,data=tcp", TCP_BLOCKS, false, s_tcp, &tcp);
+	CHECK_EQ(ret, 0, "26 blocks over TCP");
 	TEST_ASSERT_STR_EQ(tcp.data_path, "tcp", "data=tcp: daqiri_data_path tcp");
 	if (ret)
 		goto out;
 
 	snprintf(uri, sizeof(uri), "daqiri:127.0.0.1,data=udp,yaml=%s", yaml);
-	ret = capture(uri, true, s_udp, &udp);
-	CHECK_EQ(ret, 0, "32 blocks in UDP sample mode");
+	ret = capture(uri, NB_BLOCKS, true, s_udp, &udp);
+	CHECK_EQ(ret, 0, "26 blocks in UDP sample mode");
+	CHECK_EQ(udp.sent, UDP_COUNT, "UDP: the emulator sent its 36 datagrams");
+	CHECK_EQ(udp.arrived, udp.sent, "UDP: all of them arrived before the disable");
 	TEST_ASSERT_STR_EQ(udp.data_path, "udp", "data=udp: daqiri_data_path udp");
 	CHECK_EQ(udp.lost + udp.dropped_no_block + udp.failed, 0,
 			"UDP: no datagram lost or dropped, no block failed");
@@ -279,10 +357,11 @@ int main(int argc, char **argv)
 
 	setvbuf(stdout, NULL, _IONBF, 0);
 
-	if (argc != 2) {
-		printf("Usage: %s <sample.bin>\n", argv[0]);
+	if (argc != 3) {
+		printf("Usage: %s <sample.bin> <oracle.json>\n", argv[0]);
 		return 2;
 	}
+	oracle_path = argv[2];
 	if (!yaml || !yaml[0]) {
 		printf("DAQIRI_YAML must be the path of socket-udp-loopback.yaml\n");
 		return 1;
