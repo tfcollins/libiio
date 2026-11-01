@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct iio_backend_ops;
 struct iiod_udp_stream_ops;
 
 /* Long options, numbered past every short one */
@@ -33,6 +34,7 @@ enum emu_udp_option {
 	EMU_UDP_OPT_COUNT,
 	/* Hidden: the logging provider of the responder's contract test */
 	EMU_UDP_OPT_MOCK_PROVIDER,
+	EMU_UDP_OPT_MOCK_FAIL_DISABLE,
 	EMU_UDP_OPT_END,
 };
 
@@ -51,7 +53,9 @@ struct emu_udp_cfg {
 	uint64_t dup_every;
 	uint64_t count; /* sequence numbers per enable; 0: no end */
 	const char *json;
-	const char *mock_log; /* --udp-mock-provider */
+	const char *mock_log;	    /* --udp-mock-provider */
+	bool mock_disables;	    /* --udp-mock-fail-disable given */
+	uint64_t mock_fail_disable; /* how many DISABLE_BUFFERs fail */
 };
 
 void emu_udp_cfg_init(struct emu_udp_cfg *cfg);
@@ -86,5 +90,14 @@ struct emu_udp_mock;
 extern const struct iiod_udp_stream_ops emu_udp_mock_ops;
 struct emu_udp_mock *emu_udp_mock_create(const char *path);
 void emu_udp_mock_destroy(struct emu_udp_mock *mock);
+
+/*
+ * --udp-mock-fail-disable <n>: the emulated device's <ops>, but for an
+ * enable_buffer() that answers the first <n> DISABLE_BUFFERs with -ETIMEDOUT,
+ * after the stream's stop(), and has the mock log every DISABLE_BUFFER. They
+ * replace the context's own before the server takes connections.
+ */
+const struct iio_backend_ops *emu_udp_mock_device_ops(
+		struct emu_udp_mock *mock, const struct iio_backend_ops *ops, uint64_t n);
 
 #endif /* IIOD_EMU_UDP_STREAM_H */

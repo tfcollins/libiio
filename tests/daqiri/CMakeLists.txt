@@ -145,6 +145,67 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
             TEST daqiri_lifecycle
             APPEND
             PROPERTY ENVIRONMENT "DAQIRI_MOCK_LOG=${LIFECYCLE_LOG}")
+
+        # A failed ENABLE_BUFFER, and a DISABLE_BUFFER that fails once, then
+        # twice, against the mock with --udp-mock-fail-disable <n>, which also
+        # logs every DISABLE_BUFFER. The failed enable's YAML asks for payloads
+        # whose stream the mock fails to start.
+        set(LIFECYCLE_ENABLE_LOG
+            ${CMAKE_CURRENT_BINARY_DIR}/daqiri_lifecycle_enable_fails.log)
+        add_test(
+            NAME daqiri_lifecycle_enable_fails
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args
+                --udp-mock-provider ${LIFECYCLE_ENABLE_LOG}
+                --udp-mock-fail-disable 0 -- ${XMLS}/fmcomms2.xml
+                $<TARGET_FILE:test_daqiri_lifecycle> --enable-fails
+                ${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback-1250.yaml
+        )
+        set(LIFECYCLE_DISABLE_ONCE_LOG
+            ${CMAKE_CURRENT_BINARY_DIR}/daqiri_lifecycle_disable_fails_once.log)
+        add_test(
+            NAME daqiri_lifecycle_disable_fails_once
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args
+                --udp-mock-provider ${LIFECYCLE_DISABLE_ONCE_LOG}
+                --udp-mock-fail-disable 1 -- ${XMLS}/fmcomms2.xml
+                $<TARGET_FILE:test_daqiri_lifecycle> --disable-fails-once)
+        set(LIFECYCLE_DISABLE_TWICE_LOG
+            ${CMAKE_CURRENT_BINARY_DIR}/daqiri_lifecycle_disable_fails_twice.log
+        )
+        add_test(
+            NAME daqiri_lifecycle_disable_fails_twice
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args
+                --udp-mock-provider ${LIFECYCLE_DISABLE_TWICE_LOG}
+                --udp-mock-fail-disable 2 -- ${XMLS}/fmcomms2.xml
+                $<TARGET_FILE:test_daqiri_lifecycle> --disable-fails-twice)
+        set_tests_properties(
+            daqiri_lifecycle_enable_fails daqiri_lifecycle_disable_fails_once
+            daqiri_lifecycle_disable_fails_twice
+            PROPERTIES
+                LABELS
+                daqiri-loopback
+                ENVIRONMENT
+                "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml;IIO_DAQIRI_YAML="
+                RESOURCE_LOCK
+                "iiod-emu-30431;daqiri-udp-25101"
+                TIMEOUT
+                60)
+        set_property(
+            TEST daqiri_lifecycle_enable_fails
+            APPEND
+            PROPERTY ENVIRONMENT "DAQIRI_MOCK_LOG=${LIFECYCLE_ENABLE_LOG}")
+        set_property(
+            TEST daqiri_lifecycle_disable_fails_once
+            APPEND
+            PROPERTY ENVIRONMENT
+                     "DAQIRI_MOCK_LOG=${LIFECYCLE_DISABLE_ONCE_LOG}")
+        set_property(
+            TEST daqiri_lifecycle_disable_fails_twice
+            APPEND
+            PROPERTY ENVIRONMENT
+                     "DAQIRI_MOCK_LOG=${LIFECYCLE_DISABLE_TWICE_LOG}")
     endif ()
 
     # UDP sample mode end to end: the backend through the DAQIRI socket

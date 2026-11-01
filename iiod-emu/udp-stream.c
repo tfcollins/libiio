@@ -246,7 +246,8 @@ void emu_udp_cfg_free(struct emu_udp_cfg *cfg)
 
 int emu_udp_parse_option(struct emu_udp_cfg *cfg, int opt, const char *arg)
 {
-	if (opt != EMU_UDP_OPT_UDP && opt != EMU_UDP_OPT_MOCK_PROVIDER)
+	if (opt != EMU_UDP_OPT_UDP && opt != EMU_UDP_OPT_MOCK_PROVIDER &&
+			opt != EMU_UDP_OPT_MOCK_FAIL_DISABLE)
 		cfg->stream_opt = true;
 
 	switch (opt) {
@@ -277,6 +278,10 @@ int emu_udp_parse_option(struct emu_udp_cfg *cfg, int opt, const char *arg)
 	case EMU_UDP_OPT_MOCK_PROVIDER:
 		cfg->mock_log = arg;
 		return 0;
+	case EMU_UDP_OPT_MOCK_FAIL_DISABLE:
+		cfg->mock_disables = true;
+		return parse_u64("--udp-mock-fail-disable", arg, 0, UINT64_MAX,
+				&cfg->mock_fail_disable);
 	default:
 		return -EINVAL;
 	}

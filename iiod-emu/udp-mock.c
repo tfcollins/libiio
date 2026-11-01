@@ -14,6 +14,11 @@
  * a client's DISABLE did shows there, since the responder calls no provider
  * for a DISABLE with nothing streaming.
  *
+ * With --udp-mock-fail-disable <n> as well, every DISABLE_BUFFER shows: once
+ * the responder has stopped the stream, the emulated device's buffer logs
+ * "disable", or for the first <n> of them "disable failed" and answers
+ * -ETIMEDOUT, enabled still, as a board does whose sender did not drain.
+ *
  * Copyright (C) 2026 Analog Devices, Inc.
  */
 
@@ -50,6 +55,7 @@
 struct emu_udp_mock {
 	FILE *log;
 	struct iio_mutex *lock;
+	uint64_t fail_disable; /* DISABLE_BUFFERs still to fail */
 };
 
 /* In entry->udp_priv */
@@ -186,6 +192,46 @@ const struct iiod_udp_stream_ops emu_udp_mock_ops = {
 	.stop = mock_stop,
 	.release = mock_release,
 };
+
+/* --udp-mock-fail-disable: the emulated device's ops, with the enable_buffer()
+ * below, which the responder's DISABLE_BUFFER reaches after stop() */
+static struct emu_udp_mock *disable_mock;
+static const struct iio_backend_ops *device_ops;
+static struct iio_backend_ops mock_device_ops;
+
+static int mock_enable_buffer(
+		struct iio_buffer_pdata *pdata, size_t nb_samples, bool enable, bool cyclic)
+{
+	struct emu_udp_mock *mock = disable_mock;
+	bool fail;
+
+	if (!enable) {
+		iio_mutex_lock(mock->lock);
+		fail = mock->fail_disable > 0;
+		if (fail)
+			mock->fail_disable--;
+		iio_mutex_unlock(mock->lock);
+
+		mock_log(mock, fail ? "disable failed" : "disable");
+		if (fail)
+			return -ETIMEDOUT;
+	}
+
+	return device_ops->enable_buffer(pdata, nb_samples, enable, cyclic);
+}
+
+const struct iio_backend_ops *emu_udp_mock_device_ops(
+		struct emu_udp_mock *mock, const struct iio_backend_ops *ops, uint64_t n)
+{
+	mock->fail_disable = n;
+	disable_mock = mock;
+
+	device_ops = ops;
+	mock_device_ops = *ops;
+	mock_device_ops.enable_buffer = mock_enable_buffer;
+
+	return &mock_device_ops;
+}
 
 struct emu_udp_mock *emu_udp_mock_create(const char *path)
 {

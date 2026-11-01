@@ -41,7 +41,11 @@
  * checked: UDP sample mode takes the device's own layout, so 16- and 32-bit
  * channels open in one buffer. With --wrong-source (served by iiod-emu --udp
  * sending from another address than the YAML's remote_addr), only the source
- * check: the buffer does not open, with data=udp or data=auto.
+ * check: the buffer does not open, with data=udp or data=auto. With
+ * --enable-fails <yaml>, --disable-fails-once or --disable-fails-twice
+ * (served with --udp-mock-fail-disable 0, 1 or 2, so that the mock also logs
+ * every DISABLE_BUFFER), only that case: an ENABLE_BUFFER that fails after a
+ * successful setup, and a DISABLE_BUFFER that fails once, then twice.
  */
 
 #include <arpa/inet.h>
@@ -1303,6 +1307,259 @@ out:
 	rx_destroy(&rx);
 }
 
+/* --enable-fails <yaml>: a YAML with max_payload_size 1250 */
+static const char *enable_fails_yaml;
+
+/* With <enable_fails_yaml>, so in a process of its own: one YAML per process */
+static void enable_fails_child(void)
+{
+	struct rx rx;
+	long mark;
+	int ret;
+
+	ret = rx_init(&rx, ctx_for(enable_fails_yaml), DEV_NAME, false);
+	CHECK_EQ(ret, 0, "context with max_payload_size 1250, and mask");
+	if (ret)
+		goto out;
+
+	mark = log_mark();
+	ret = rx_open(&rx, 2);
+	CHECK_EQ(ret, 0, "the buffer opens: the probe is answered");
+	if (ret)
+		goto out;
+	CHECK_EQ(enqueue_all(&rx), 0, "enqueue both blocks");
+
+	CHECK_EQ(iio_buffer_stream_start(rx.stream), -EADDRINUSE,
+			"enable: ENABLE_BUFFER fails, with the server's error");
+	expect_calls(mark, "setup 1234\nsetup 1234 pending\nstart failed\ndisable\n",
+			"1234-byte payloads, the start failed, then a DISABLE dropped the setup");
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_data_path"), "udp", "no fallback to TCP");
+	CHECK_EQ(iio_block_dequeue(rx.blocks[0], true), -EBUSY, "the blocks stay queued");
+
+	/* Still disabled: the next enable sets up again */
+	mark = log_mark();
+	CHECK_EQ(iio_buffer_stream_start(rx.stream), -EADDRINUSE, "enable again: the same error");
+	expect_calls(mark, "setup 1234\nstart failed\ndisable\n",
+			"a fresh setup, then the same unwind: the buffer stayed disabled");
+
+	mark = log_mark();
+	rx_close(&rx);
+	expect_calls(mark, "release\n", "the close releases the buffer, which never streamed");
+
+	mark = log_mark();
+	CHECK_EQ(rx_open(&rx, 0), 0, "the next buffer gets the queue");
+	rx_close(&rx);
+	expect_calls(mark, "setup 1234\nrelease\n", "its probe, its release");
+out:
+	rx_destroy(&rx);
+}
+
+/*
+ * --enable-fails, against the mock with --udp-mock-fail-disable 0, which logs
+ * every DISABLE_BUFFER: the enable's setup succeeds, then ENABLE_BUFFER fails
+ * (the mock does not start a stream of 1234-byte payloads). The enable returns
+ * that error after a DISABLE that drops the setup, the buffer stays disabled,
+ * and the close gives the queue back. The child exits, so with the loopback
+ * YAML this process then opens a buffer that streams.
+ */
+TEST_FUNCTION(enable_fails)
+{
+	int fd = -1, ret, status;
+	struct rx rx;
+	long mark;
+	pid_t pid;
+
+	memset(&rx, 0, sizeof(rx));
+
+	/* No engine in this process yet: the child starts its own */
+	pid = fork();
+	if (pid < 0) {
+		TEST_ASSERT(false, "fork");
+		return;
+	}
+	if (!pid) {
+		enable_fails_child();
+		printf("  enable_fails child: %d/%d passed, %d failed\n", test_passed, test_count,
+				test_failed);
+		exit(test_failed ? 1 : 0);
+	}
+
+	ret = waitpid(pid, &status, 0) == pid && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+	CHECK_EQ(ret, 0, "the child's checks passed");
+
+	fd = sender_open();
+	TEST_ASSERT(fd >= 0, "sender bound to 127.0.0.1:25102");
+	if (fd < 0)
+		return;
+
+	mark = log_mark();
+	ret = rx_init(&rx, ctx_for(yaml), DEV_NAME, false);
+	if (!ret)
+		ret = rx_open_size(&rx, 1, PAYLOAD);
+	if (!ret)
+		ret = enqueue_all(&rx);
+	if (!ret)
+		ret = iio_buffer_stream_start(rx.stream);
+	CHECK_EQ(ret, 0, "with the loopback YAML, a buffer opens and enables");
+	if (ret)
+		goto out;
+	expect_calls(mark, STREAMING, "its stream starts");
+	CHECK_EQ(send_seq(fd, 0), 0, "send 0");
+	CHECK_EQ(iio_block_dequeue(rx.blocks[0], false), 0, "block 0 done");
+	TEST_ASSERT(block_is(rx.blocks[0], 0), "block 0 is datagram 0");
+
+	mark = log_mark();
+	CHECK_EQ(iio_buffer_stream_stop(rx.stream), 0, "disable");
+	rx_close(&rx);
+	expect_calls(mark, "stop\ndisable\nrelease\n", "disable and close");
+out:
+	rx_destroy(&rx);
+	close(fd);
+}
+
+/* DQ_UDP_DISABLE_RETRY_MS (daqiri-udp.c): when a failed DISABLE is sent again */
+#define DISABLE_RETRY_MS 100
+
+/* A buffer of <nb> blocks of one payload, all queued, enabled */
+static int rx_streaming(struct rx *rx, unsigned int nb)
+{
+	int ret;
+
+	ret = rx_open_size(rx, nb, PAYLOAD);
+	if (!ret)
+		ret = enqueue_all(rx);
+	if (!ret)
+		ret = iio_buffer_stream_start(rx->stream);
+
+	return ret;
+}
+
+/*
+ * --disable-fails-once, against the mock with --udp-mock-fail-disable 1: the
+ * first DISABLE_BUFFER fails with -ETIMEDOUT, the stream stopped, as a board
+ * answers when its sender did not drain. The backend sends it again 100 ms
+ * later, which succeeds: the disable succeeds, and the next enable streams.
+ */
+TEST_FUNCTION(disable_fails_once)
+{
+	struct timespec t0;
+	struct rx rx;
+	long mark;
+	int fd, ret;
+
+	fd = sender_open();
+	TEST_ASSERT(fd >= 0, "sender bound to 127.0.0.1:25102");
+	if (fd < 0)
+		return;
+
+	mark = log_mark();
+	ret = rx_init(&rx, ctx_for(yaml), DEV_NAME, false);
+	if (!ret)
+		ret = rx_streaming(&rx, 2);
+	CHECK_EQ(ret, 0, "buffer with 2 blocks of one payload, enabled");
+	if (ret)
+		goto out;
+	expect_calls(mark, STREAMING, "the stream started");
+	CHECK_EQ(send_seq(fd, 0), 0, "send 0");
+	CHECK_EQ(iio_block_dequeue(rx.blocks[0], false), 0, "block 0 done");
+
+	mark = log_mark();
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	CHECK_EQ(iio_buffer_stream_stop(rx.stream), 0,
+			"disable: DISABLE_BUFFER sent again succeeds");
+	TEST_ASSERT(ns_since(&t0) >= DISABLE_RETRY_MS * 1000000LL, "sent again 100 ms later");
+	expect_calls(mark, "stop\ndisable failed\ndisable\n",
+			"the stream stopped, the first DISABLE failed, the second did not");
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_data_path"), "udp", "a UDP buffer still");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_last_error"), 0, "no error");
+	CHECK_EQ(iio_block_dequeue(rx.blocks[1], true), -EBUSY, "block 1 still queued");
+
+	mark = log_mark();
+	CHECK_EQ(iio_buffer_stream_start(rx.stream), 0, "enable again");
+	expect_calls(mark, "setup 9200\nstart\n", "a fresh setup, nothing pending, a start");
+	CHECK_EQ(send_seq(fd, 0), 0, "send 0 of the new stream");
+	CHECK_EQ(iio_block_dequeue(rx.blocks[1], false), 0, "block 1 done");
+	TEST_ASSERT(block_is(rx.blocks[1], 0), "block 1 is datagram 0");
+
+	mark = log_mark();
+	CHECK_EQ(iio_buffer_stream_stop(rx.stream), 0, "disable");
+	rx_close(&rx);
+	expect_calls(mark, "stop\ndisable\nrelease\n", "disable and close");
+out:
+	rx_destroy(&rx);
+	close(fd);
+}
+
+/*
+ * --disable-fails-twice, against the mock with --udp-mock-fail-disable 2: the
+ * DISABLE_BUFFER sent again fails too. The board may still be streaming: the
+ * backend closes the buffer on the server (CLOSE_BUFFER, on the management
+ * connection) and returns the error, with no fallback to TCP. The queued
+ * blocks fail with it, the counters still read, an enable gets -EBADF, the
+ * close sends nothing more, and the context and the queue serve the next
+ * buffer.
+ */
+TEST_FUNCTION(disable_fails_twice)
+{
+	struct iio_block **b;
+	struct rx rx;
+	long mark;
+	int fd, ret;
+
+	fd = sender_open();
+	TEST_ASSERT(fd >= 0, "sender bound to 127.0.0.1:25102");
+	if (fd < 0)
+		return;
+
+	mark = log_mark();
+	ret = rx_init(&rx, ctx_for(yaml), DEV_NAME, false);
+	if (!ret)
+		ret = rx_streaming(&rx, 3);
+	CHECK_EQ(ret, 0, "buffer with 3 blocks of one payload, enabled");
+	if (ret)
+		goto out;
+	b = rx.blocks;
+	expect_calls(mark, STREAMING, "the stream started");
+	CHECK_EQ(send_seq(fd, 0), 0, "send 0");
+	CHECK_EQ(iio_block_dequeue(b[0], false), 0, "block 0 done");
+
+	mark = log_mark();
+	CHECK_EQ(iio_buffer_stream_stop(rx.stream), -ETIMEDOUT,
+			"disable: both DISABLE_BUFFERs fail, and so does the disable");
+	expect_calls(mark, "stop\ndisable failed\ndisable failed\nrelease\n",
+			"two DISABLEs, then CLOSE_BUFFER released the buffer");
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_data_path"), "udp", "no fallback to TCP");
+	CHECK_EQ(iio_block_dequeue(b[1], true), -ETIMEDOUT, "block 1 failed with the error");
+	CHECK_EQ(iio_block_dequeue(b[2], true), -ETIMEDOUT, "block 2 too");
+	CHECK_EQ(iio_block_enqueue(b[1], 0, false), 0, "enqueue after the failure");
+	CHECK_EQ(iio_block_dequeue(b[1], true), -ETIMEDOUT, "that block fails with it at once");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_packets"), 1, "the counters still read");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_blocks_failed"), 3, "3 blocks failed");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_last_error"), -ETIMEDOUT, "last error");
+	TEST_ASSERT(phy_attr_reads(rx.ctx), "the context reads attributes");
+
+	mark = log_mark();
+	CHECK_EQ(iio_buffer_stream_start(rx.stream), -EBADF, "enable: closed on the server");
+	TEST_ASSERT_STR_EQ(attr_str(rx.buf, "daqiri_data_path"), "udp",
+			"a UDP buffer until the close");
+	rx_close(&rx);
+	expect_calls(mark, "", "no setup, and the close sends nothing more");
+
+	mark = log_mark();
+	ret = rx_streaming(&rx, 1);
+	CHECK_EQ(ret, 0, "the next buffer opens on the queue and enables");
+	if (ret)
+		goto out;
+	CHECK_EQ(send_seq(fd, 0), 0, "send 0");
+	CHECK_EQ(iio_block_dequeue(rx.blocks[0], false), 0, "its block done");
+	CHECK_EQ(iio_buffer_stream_stop(rx.stream), 0, "disable: this DISABLE_BUFFER succeeds");
+	rx_close(&rx);
+	expect_calls(mark, STREAMING "stop\ndisable\nrelease\n", "the next buffer's stream");
+out:
+	rx_destroy(&rx);
+	close(fd);
+}
+
 /* --mixed, against float_scan_elements.xml: float-dev voltage1 is le:F16/16,
  * voltage2 le:f32/32 */
 TEST_FUNCTION(mixed_lengths)
@@ -1335,6 +1592,21 @@ int main(int argc, char **argv)
 	}
 	if (argc > 1 && !strcmp(argv[1], "--wrong-source")) {
 		RUN_TEST(wrong_source);
+		goto out;
+	}
+	if (argc > 1 && (!strcmp(argv[1], "--enable-fails") ||
+					!strcmp(argv[1], "--disable-fails-once") ||
+					!strcmp(argv[1], "--disable-fails-twice"))) {
+		if (!mock_log || !mock_log[0]) {
+			TEST_ASSERT(false, "DAQIRI_MOCK_LOG names the mock provider's log");
+		} else if (!strcmp(argv[1], "--enable-fails")) {
+			enable_fails_yaml = argc > 2 ? argv[2] : "";
+			RUN_TEST(enable_fails);
+		} else if (!strcmp(argv[1], "--disable-fails-once")) {
+			RUN_TEST(disable_fails_once);
+		} else {
+			RUN_TEST(disable_fails_twice);
+		}
 		goto out;
 	}
 

@@ -24,6 +24,7 @@
 #include <iio/iio-backend.h>
 #include <iiod/udp-stream.h>
 
+#include "../iio-private.h" /* the context's ops, for --udp-mock-fail-disable */
 #include "udp-stream.h"
 #endif
 
@@ -125,6 +126,7 @@ static const struct option options[] = {
 	{ "udp-json", required_argument, NULL, EMU_UDP_OPT_JSON },
 	{ "udp-count", required_argument, NULL, EMU_UDP_OPT_COUNT },
 	{ "udp-mock-provider", required_argument, NULL, EMU_UDP_OPT_MOCK_PROVIDER },
+	{ "udp-mock-fail-disable", required_argument, NULL, EMU_UDP_OPT_MOCK_FAIL_DISABLE },
 #endif
 	{ NULL, 0, NULL, 0 },
 };
@@ -327,6 +329,11 @@ static bool udp_cfg_is_valid(const struct emu_udp_cfg *cfg, const char *uri)
 		return false;
 	}
 
+	if (cfg->mock_disables && !cfg->mock_log) {
+		fprintf(stderr, "--udp-mock-fail-disable needs --udp-mock-provider.\n\n");
+		return false;
+	}
+
 	if (cfg->udp && strncmp(uri, "emu:", strlen("emu:"))) {
 		fprintf(stderr, "--udp streams the sample files of an emu: URI, not %s\n\n", uri);
 		return false;
@@ -449,6 +456,11 @@ int main(int argc, char **argv)
 		mock = emu_udp_mock_create(udp_cfg.mock_log);
 		if (!mock)
 			goto out_ctx_destroy;
+		/* The DISABLE_BUFFERs that fail: the emulated device's own
+		 * ops, wrapped, before anything uses them */
+		if (udp_cfg.mock_disables)
+			emu.ctx->ops = emu_udp_mock_device_ops(
+					mock, emu.ctx->ops, udp_cfg.mock_fail_disable);
 	}
 #endif
 
