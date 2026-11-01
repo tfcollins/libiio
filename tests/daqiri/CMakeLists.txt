@@ -146,9 +146,102 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
             PROPERTY ENVIRONMENT "DAQIRI_MOCK_LOG=${LIFECYCLE_LOG}")
     endif ()
 
-    # UDP sample mode end to end, the backend against iiod-emu --udp as the
-    # reference server through the DAQIRI socket engine: these tests belong
-    # here.
+    # UDP sample mode end to end: the backend through the DAQIRI socket
+    # engine against iiod-emu --udp, the reference server (built on Linux
+    # only), and against the plain emulator, which does not advertise it.
+    if (IIOD_EMU_UDP)
+        # The blocks and counters against the emulator's oracle, case by
+        # case, each against an emulator with its own injection flags, which
+        # the test starts through with_emu.sh
+        add_executable(test_udp_loopback test_udp_loopback.c)
+        target_link_libraries(test_udp_loopback PRIVATE iio)
+        target_include_directories(test_udp_loopback
+                                   PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+        target_compile_definitions(test_udp_loopback PRIVATE TESTS_DEBUG)
+        add_dependencies(test_udp_loopback iio-daqiri iiod-emu)
+
+        set(UDP_LOOPBACK_ORACLE ${CMAKE_CURRENT_BINARY_DIR}/udp_loopback.json)
+        add_test(
+            NAME daqiri_udp_loopback
+            COMMAND
+                test_udp_loopback ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh
+                ${XMLS}/fmcomms2.xml ${XMLS}/cf-ad9361-lpc_buf0.bin
+                ${UDP_LOOPBACK_ORACLE})
+        set_tests_properties(
+            daqiri_udp_loopback
+            PROPERTIES
+                LABELS
+                daqiri-loopback
+                ENVIRONMENT
+                "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml;IIO_DAQIRI_YAML="
+                RESOURCE_LOCK
+                "iiod-emu-30431;daqiri-udp-25101"
+                TIMEOUT
+                120)
+
+        # The same device and mask through data=tcp and data=udp: the same
+        # bytes, the sample file repeated
+        add_executable(test_udp_equivalence test_udp_equivalence.c)
+        target_link_libraries(test_udp_equivalence PRIVATE iio)
+        target_include_directories(test_udp_equivalence
+                                   PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+        target_compile_definitions(test_udp_equivalence PRIVATE TESTS_DEBUG)
+        add_dependencies(test_udp_equivalence iio-daqiri iiod-emu)
+
+        add_test(
+            NAME daqiri_udp_equivalence
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args --udp
+                --udp-pps 1000 -- ${XMLS}/fmcomms2.xml
+                $<TARGET_FILE:test_udp_equivalence>
+                ${XMLS}/cf-ad9361-lpc_buf0.bin)
+        set_tests_properties(
+            daqiri_udp_equivalence
+            PROPERTIES
+                LABELS
+                daqiri-loopback
+                ENVIRONMENT
+                "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml;IIO_DAQIRI_YAML="
+                RESOURCE_LOCK
+                "iiod-emu-30431;daqiri-udp-25101"
+                TIMEOUT
+                60)
+    endif ()
+
+    # Against the plain emulator, which does not advertise UDP sample mode:
+    # data=auto streams over TCP and data=udp does not open, and neither
+    # sends the setup (the server logs it) nor starts the engine (the
+    # YAML's UDP port stays free, hence the second lock).
+    add_executable(test_udp_fallback test_udp_fallback.c emu_client.c)
+    target_link_libraries(test_udp_fallback PRIVATE iio)
+    target_include_directories(test_udp_fallback
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+    target_compile_definitions(test_udp_fallback PRIVATE TESTS_DEBUG)
+    add_dependencies(test_udp_fallback iio-daqiri iiod-emu)
+
+    add_test(
+        NAME daqiri_auto_fallback
+        COMMAND
+            ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh ${XMLS}/fmcomms2.xml
+            $<TARGET_FILE:test_udp_fallback> --auto-fallback
+            ${XMLS}/cf-ad9361-lpc_buf0.bin)
+    add_test(
+        NAME daqiri_udp_refused
+        COMMAND
+            ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh ${XMLS}/fmcomms2.xml
+            $<TARGET_FILE:test_udp_fallback> --refused
+            ${XMLS}/cf-ad9361-lpc_buf0.bin)
+    set_tests_properties(
+        daqiri_auto_fallback daqiri_udp_refused
+        PROPERTIES
+            LABELS
+            daqiri-loopback
+            ENVIRONMENT
+            "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-loopback.yaml;IIO_DAQIRI_YAML="
+            RESOURCE_LOCK
+            "iiod-emu-30431;daqiri-udp-25101"
+            TIMEOUT
+            60)
 
     # The api label, once per XML, with TESTS_API_URI pointing at daqiri:.
     add_test(

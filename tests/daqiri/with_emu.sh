@@ -7,6 +7,8 @@
 #        URI: with_emu.sh --emu-args --udp --udp-pps 2000 -- <xml> <cmd...>
 # Env:   IIOD_EMU  path to the iiod-emu binary (default: iiod-emu from PATH)
 #
+# The command runs with IIOD_EMU_LOG set to the file that collects the
+# emulator's output, which it may read; the file goes when this script exits.
 # Exits with the command's status. The emulator's output is shown only when
 # something fails.
 set -u
@@ -67,7 +69,7 @@ while ! nc -z 127.0.0.1 "$PORT" 2>/dev/null; do
 	sleep 0.1
 done
 
-"$@"
+IIOD_EMU_LOG=$log "$@"
 rc=$?
 
 if [ "$rc" -ne 0 ]; then
