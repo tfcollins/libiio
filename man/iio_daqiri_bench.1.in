@@ -95,8 +95,9 @@ for that.
 .TP
 .B \-k, \-\-check ramp|none
 .B ramp
-verifies the ramp16 test pattern (sample n has I = n & 0x7FFF and
-Q = (0x8000 - n) & 0xFFFF, as sent by the test sender of the DAQIRI backend)
+verifies the ramp16_le test pattern (sample n has I = n & 0x7FFF and
+Q = (0x8000 - n) & 0xFFFF, little-endian 16-bit words, as the test pattern of
+the board's UDP framer sends them; see ramp16_le in tests/daqiri/gen_golden.py)
 on host-order int16 I/Q pairs, and counts the samples that do not follow it.
 It needs 4-byte samples. After a dequeue error (lost data) the pattern is
 joined again from the next block. The default is

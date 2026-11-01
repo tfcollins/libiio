@@ -89,7 +89,7 @@ static void print_help(void)
 	       "\t-T, --duration [arg]\n\t\t\tSeconds to measure, from the first block (required).\n"
 	       "\t\t\tNote that this is not the context timeout of the other\n"
 	       "\t\t\tutilities: use --timeout for that.\n"
-	       "\t-k, --check [arg]\n\t\t\t'ramp' verifies the ramp16 test pattern on host-order\n"
+	       "\t-k, --check [arg]\n\t\t\t'ramp' verifies the ramp16_le test pattern on host-order\n"
 	       "\t\t\tint16 I/Q pairs and counts the bad samples; 'none'\n"
 	       "\t\t\t(default) does not look at the data.\n"
 	       "\t-j, --json [arg]\n\t\t\tAlso write the result as JSON to this file.\n"
@@ -261,12 +261,14 @@ static double lat_pct(const struct lat *l, double pct)
 	return (double)l->us[rank - 1] / 1000.0;
 }
 
-/* ---- ramp16 ------------------------------------------------------------ */
+/* ---- ramp16_le --------------------------------------------------------- */
 
 /*
- * ramp16 (tests/daqiri/gen_golden.py): sample n has I = n & 0x7FFF and
- * Q = (0x8000 - n) & 0xFFFF. After the backend's byte swap both are host-order
- * 16-bit words, I at offset 0 and Q at offset 2.
+ * ramp16_le (tests/daqiri/gen_golden.py), the test pattern of the board's UDP
+ * framer: sample n has I = n & 0x7FFF and Q = (0x8000 - n) & 0xFFFF, both
+ * little-endian 16-bit words, I at offset 0 and Q at offset 2. UDP sample mode
+ * hands the payload over unchanged, so on a little-endian host they are the
+ * host-order words read here.
  *
  * <next> is the index the first sample of the block should have. The first
  * block of a run, and the first after a dequeue error, seed it from their own
