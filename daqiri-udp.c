@@ -64,6 +64,11 @@
  * zero-filled. Drops after a block failed for an overrun, with no datagram
  * delivered since, belong to the same overrun and fail nothing more, so a
  * consumer that queues one block at a time still gets data.
+ * A gap too large to zero-fill (a resync) fails a block with -EIO whatever
+ * lossy says: the current block, else the next queued one, else, with none
+ * queued, the first block that a later datagram finds, which then also
+ * reports the drops in between; the datagram after the loss starts the next
+ * block.
  * A failure of the engine, of memory or of the stream's control fails the
  * stream: the current and queued blocks, and every block enqueued
  * afterwards, fail with that error until the buffer is disabled.
@@ -178,6 +183,7 @@ struct dq_udp_buffer {
 	bool cur_gap;			  /* cur follows an unsized loss */
 	bool delivered;			  /* the last datagram went into a block */
 	bool overrun_pending;		  /* dropped datagrams the next block must report */
+	bool resync_pending;		  /* a resync found no block: the next one fails */
 
 	struct dq_udp_rx rx;
 	struct dq_asm as;
@@ -392,6 +398,20 @@ static void dq_udp_deliver(
 			return;
 		}
 
+		if (v->resync_pending) {
+			/* A gap too large to fill came while no block was
+			 * queued: this block fails for it whatever lossy says,
+			 * and reports the overrun of those drops as well. The
+			 * datagram starts the next one. */
+			v->resync_pending = false;
+			v->overrun_pending = false;
+			v->cur_gap = true;
+			dq_udp_complete(v, -EIO);
+			dq_asm_reset(&v->as);
+			gap = 0;
+			continue;
+		}
+
 		if (v->overrun_pending) {
 			/* Datagrams were dropped since the last delivered one:
 			 * a gap of unknown size. Fail the block like a sized
@@ -454,7 +474,8 @@ static void dq_udp_packet_segs(struct dq_udp_buffer *v, const uint8_t *hdr, uint
 		/* Too large to fill: resync on this datagram. A block fails as
 		 * with lossy=0: the current one, or with none current (the gap
 		 * fell on a block boundary) the next one, attached empty after
-		 * dropping what the assembler owed. */
+		 * dropping what the assembler owed, or with none queued either
+		 * the first one a later datagram finds (resync_pending). */
 		if (!v->cur) {
 			dq_asm_reset(&v->as);
 			dq_udp_next(v);
@@ -464,6 +485,8 @@ static void dq_udp_packet_segs(struct dq_udp_buffer *v, const uint8_t *hdr, uint
 			dq_udp_complete(v, -EIO);
 			/* That block reports a pending overrun as well */
 			v->overrun_pending = false;
+		} else {
+			v->resync_pending = true;
 		}
 		dq_asm_reset(&v->as);
 		out.gap = 0;
@@ -726,6 +749,7 @@ static int dq_udp_rx_begin(struct dq_udp_buffer *v, const struct iiod_udp_stream
 	dq_asm_reset(&v->as);
 	v->delivered = false;
 	v->overrun_pending = false;
+	v->resync_pending = false;
 	v->fatal = 0;
 	/* The socket engine filters on the source itself (remote_addr) */
 	if (v->raw) {
@@ -1185,6 +1209,7 @@ static void dq_udp_cancel(struct dq_udp_buffer *v)
 	dq_asm_reset(&v->as);
 	v->delivered = false;
 	v->overrun_pending = false;
+	v->resync_pending = false;
 	/* Under the lock, so that a concurrent enable cannot clear it */
 	atomic_store(&v->stop, true);
 

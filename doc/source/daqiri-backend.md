@@ -178,7 +178,8 @@ datagrams it spans. With `lossy=1` a gap is zero-filled, one payload's worth
 of zeros per lost datagram, so the samples that follow stay at their place in
 the stream (the zeros may span several blocks). The zero-fill is capped at
 1024 lost datagrams: a larger gap is a resynchronisation instead and fails a
-block with `-EIO` even with `lossy=1`.
+block with `-EIO` even with `lossy=1`; when no block is queued as it happens,
+the first block that a later datagram finds fails.
 
 If no block is queued when a datagram arrives the datagram is dropped and
 `daqiri_rx_dropped_no_block` counts it: keep enough blocks queued for your

@@ -22,8 +22,9 @@
  * (the engine's socket only accepts that source) to check that blocks
  * complete with the payloads unchanged, fail on a gap, resync on a gap too
  * large to fill, zero-fill with lossy=1, and that the sequence restarts at 0
- * after a new enable. Loss statistics against a real sender are the UDP
- * loopback tests'.
+ * after a new enable; then that a gap too large to fill that comes while no
+ * block is queued still fails the next block, even with lossy=1. Loss
+ * statistics against a real sender are the UDP loopback tests'.
  *
  * exit_with_open_buffer runs before (a), while this process has no engine:
  * forked children start one each and exit with a buffer streaming.
@@ -861,6 +862,77 @@ out:
 	close(fd);
 }
 
+/* Until the counter <name> reads <val>, at most <timeout_ms> */
+static long long wait_attr(
+		const struct iio_buffer *buf, const char *name, long long val, int timeout_ms)
+{
+	const struct timespec ms = { .tv_nsec = 1000000 };
+	long long cur;
+
+	while ((cur = attr_ll(buf, name)) != val && timeout_ms-- > 0)
+		nanosleep(&ms, NULL);
+
+	return cur;
+}
+
+/* A gap too large to zero-fill that comes while no block is queued: there is
+ * no block to fail then, so the next block a datagram finds fails with -EIO,
+ * also with lossy=1, and the datagram starts the one after */
+TEST_FUNCTION(resync_without_block)
+{
+	struct iio_block **b;
+	struct rx rx;
+	int fd, ret;
+
+	fd = sender_open();
+	TEST_ASSERT(fd >= 0, "sender bound to 127.0.0.1:25102");
+	if (fd < 0)
+		return;
+
+	ret = rx_init(&rx, ctx_opts(yaml, ",lossy=1"), DEV_NAME, false);
+	if (!ret)
+		ret = iio_context_set_timeout(rx.ctx, 1000);
+	if (!ret)
+		ret = rx_open_size(&rx, 2, PAYLOAD);
+	CHECK_EQ(ret, 0, "lossy=1 buffer with 2 blocks of one payload");
+	if (ret)
+		goto out;
+	b = rx.blocks;
+
+	CHECK_EQ(enqueue_all(&rx), 0, "enqueue 2");
+	CHECK_EQ(iio_buffer_stream_start(rx.stream), 0, "enable");
+	CHECK_EQ(send_seq(fd, 0), 0, "send 0");
+	CHECK_EQ(send_seq(fd, 1), 0, "send 1");
+	CHECK_EQ(iio_block_dequeue(b[0], false), 0, "block 0 done");
+	CHECK_EQ(iio_block_dequeue(b[1], false), 0, "block 1 done");
+
+	/* 2 to 2001 lost, and no block queued to fail */
+	CHECK_EQ(send_seq(fd, 2002), 0, "send 2002, nothing queued");
+	CHECK_EQ(wait_attr(rx.buf, "daqiri_rx_dropped_no_block", 1, 2000), 1,
+			"datagram 2002 dropped: no block");
+
+	CHECK_EQ(iio_block_enqueue(b[0], 0, false), 0, "re-enqueue block 0");
+	CHECK_EQ(iio_block_enqueue(b[1], 0, false), 0, "re-enqueue block 1");
+	CHECK_EQ(send_seq(fd, 2003), 0, "send 2003");
+	CHECK_EQ(iio_block_dequeue(b[0], false), -EIO, "block 0 fails: the resync, lossy=1 or not");
+	CHECK_EQ(iio_block_dequeue(b[1], false), 0, "block 1 done");
+	TEST_ASSERT(block_is(b[1], 2003), "block 1 is datagram 2003, whole");
+
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_packets"), 4, "4 datagrams");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_lost_packets"), 2000, "2000 lost");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_gap_events"), 1, "one gap");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_overrun_events"), 1,
+			"one overrun: 2002 found no block");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_rx_zero_filled_bytes"), 0, "nothing zero-filled");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_blocks_completed"), 3, "3 blocks completed");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_blocks_failed"), 1, "1 block failed");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_blocks_with_gaps"), 1, "1 block with a gap");
+	CHECK_EQ(attr_ll(rx.buf, "daqiri_last_error"), -EIO, "last error");
+out:
+	rx_destroy(&rx);
+	close(fd);
+}
+
 /* --mixed, against float_scan_elements.xml: float-dev voltage1 is le:F16/16,
  * voltage2 le:f32/32 */
 TEST_FUNCTION(mixed_lengths)
@@ -907,6 +979,7 @@ int main(int argc, char **argv)
 	RUN_TEST(refused_probe_auto);
 	RUN_TEST(refused_probe_udp);
 	RUN_TEST(data_smoke);
+	RUN_TEST(resync_without_block);
 out:
 	printf("test_daqiri_lifecycle: %d/%d passed, %d failed\n", test_passed, test_count,
 			test_failed);
