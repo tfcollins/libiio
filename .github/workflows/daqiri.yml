@@ -29,6 +29,10 @@ jobs:
         run: cmake --build build -j"$(nproc)"
       - name: Unit tests
         run: ctest --test-dir build -L '^daqiri$' --output-on-failure
+      # The emulator tests and the loopback tests share 127.0.0.1:30431 and
+      # :25101: one test at a time
+      - name: Emulator tests
+        run: ctest --test-dir build -L daqiri-emu -j1 --output-on-failure
       - name: Loopback tests
         run: ctest --test-dir build -L daqiri-loopback -j1 --output-on-failure
       - name: Upload test logs
