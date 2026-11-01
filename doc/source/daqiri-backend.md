@@ -13,13 +13,15 @@ This is the first phase of the backend.
 
 - The management plane (context description, attributes, triggers) is a plain
   TCP connection to `iiod`, like `ip:`.
-- The data plane has two paths: UDP sample mode, in which the server sends the
-  samples of an enabled buffer as UDP datagrams that DAQIRI receives, and the
-  stock `iiod` binary protocol over TCP. The URI key `data=` and what the
-  server advertises pick one when a buffer is opened.
-- Only the DAQIRI **socket engine** (Linux UDP sockets, any NIC) is supported.
-  The DPDK engine, the raw ibverbs engine and GPU memory (`mem=device`) are
-  later phases.
+- The data plane has two paths. In **UDP sample mode** the server sends the
+  samples of an enabled buffer as UDP datagrams, which DAQIRI receives; a new
+  `iiod` command sets the stream up. The other path is the stock `iiod` binary
+  protocol over TCP. The URI key `data=`, what the server advertises and its
+  answer to a probe pick one when a buffer is opened.
+- The DAQIRI **socket engine** (Linux UDP sockets, any NIC) is the tested
+  receiver. Raw queues of the DPDK and ibverbs engines are implemented
+  (Ethernet, IPv4 and UDP checks, the endpoint taken from flow rules) but have
+  not carried UDP sample mode yet. GPU memory (`mem=device`) is a later phase.
 - Receive only.
 
 The backend is a separate module, `libiio-daqiri.so`. `libiio.so` itself gains
@@ -60,18 +62,19 @@ daqiri:<host>[:port][,key=value]*
 `<host>` is the address of the board running `iiod`; the optional `port` is
 its management port (default 30431). The options follow, separated by commas.
 Unknown keys, and values that do not parse, make context creation fail with
-`-EINVAL`.
+`-EINVAL`; so do the keys of the former VITA 49.2 path (`framing`, `sid`,
+`sid_mask`, `swap`, `gap_ts`).
 
 | Key | Values | Default | Meaning |
 |---|---|---|---|
-| `data` | `auto`, `udp`, `tcp` | `auto` | Data path of the buffers, see [Data paths](#daqiri-data-paths). `auto`: UDP when the server advertises UDP sample mode and a DAQIRI configuration is set, otherwise TCP. `udp`: UDP or the buffer does not open. `tcp`: never UDP. |
+| `data` | `auto`, `udp`, `tcp` | `auto` | Data path of the buffers, see [Data paths](#daqiri-data-paths). `auto`: UDP when the server advertises UDP sample mode, accepts the probe at open and a DAQIRI configuration is set, otherwise TCP. `udp`: UDP or the buffer does not open. `tcp`: never UDP. |
 | `yaml` | path | `$IIO_DAQIRI_YAML` | DAQIRI configuration. Needed for UDP sample mode only. |
-| `udp_dst` | IPv4 address | the YAML's, else the control connection's local address | Where the server sends the datagrams. |
+| `udp_dst` | IPv4 address | derived from the YAML, see [Where the datagrams go](#daqiri-udp-endpoint) | Where the server sends the datagrams. `0.0.0.0` is refused. |
 | `mem` | `host`, `pinned`, `device` | `host` | Memory of the blocks. `pinned` is `cudaHostAlloc` memory. `device` is not supported in this phase. |
 | `gpu` | CUDA ordinal | `0` | GPU used for `mem=pinned` and `mem=device`. |
 | `iface` | name or address | the first interface of the YAML | Which `interfaces:` entry of the YAML to receive on. |
 | `rxq` | queue id | `0` | Receive queue of that interface. |
-| `lossy` | `0`, `1` | `0` | Lost datagrams in UDP sample mode: `0` fails the block (`-EIO`), `1` zero-fills exactly the lost payloads and goes on (up to 1024 lost datagrams; host overruns are flagged, not filled; see [UDP sample mode](#daqiri-udp-sample-mode)). Readable and writable at run time as the `daqiri_lossy` buffer attribute. |
+| `lossy` | `0`, `1` | `0` | Lost datagrams in UDP sample mode: `0` fails the block (`-EIO`), `1` zero-fills exactly the lost payloads and goes on (up to 1024 lost datagrams; host overruns are flagged, not filled; see [Block errors and losses](#daqiri-block-errors)). Readable and writable at run time as the `daqiri_lossy` buffer attribute. |
 | `data_port` | port | the management port | TCP port of each buffer's own `iiod` connection, on both data paths. |
 | `poll` | microseconds | `200` | Idle wait of the receive thread when the queue is empty, see below. |
 
@@ -93,71 +96,134 @@ iio_attr -u "daqiri:192.168.2.1,data=udp,yaml=/etc/daqiri/1g.yaml" -b cf-ad9361-
 
 ## Data paths
 
-When a buffer is opened, `data=` and what the server advertises decide its
-data path. A server offers UDP sample mode with the context attribute
+When a buffer is opened, `data=`, what the server advertises and, for UDP, the
+server's answer to a probe decide its data path, which `daqiri_data_path`
+then shows. A server offers UDP sample mode with the context attribute
 `iiod,udp-stream` (value `1`) on a binary-protocol connection; the backend
 only sends the setup command to such a server, because a stock `iiod` drops
 the connection on a command it does not know.
 
 | `data=` | Server advertises UDP sample mode | Server does not |
 |---|---|---|
-| `auto` | UDP for input buffers, if a DAQIRI configuration is set; otherwise TCP | TCP |
-| `udp` | UDP | The buffer open fails with `-ENOTSUP`; the context stays usable |
+| `auto` | UDP for input buffers, if a DAQIRI configuration is set and the server accepts the probe; otherwise TCP | TCP |
+| `udp` | UDP; without a DAQIRI configuration the open fails with `-EINVAL`, and a refused probe fails it with `-ENOTSUP` | The open fails with `-ENOTSUP`; the context stays usable |
 | `tcp` | TCP | TCP |
 
-Every buffer has an `iiod` connection of its own, as with `ip:`, and opens
-the buffer on it. A UDP buffer then sends a probing setup right away:
+Output buffers always stream over TCP with `data=auto`; `data=udp` refuses
+them with `-ENOTSUP`.
+
+Every buffer has an `iiod` connection of its own, as with `ip:`, and opens the
+buffer on it with `OPEN_BUFFER`. A buffer that the table sends to UDP also
+gets a receive queue of the DAQIRI engine (one buffer per queue), and right
+after `OPEN_BUFFER` it sends one **probing setup**, which asks the server
+whether it can stream this buffer:
 
 - the server refuses it (`-ENOTSUP`, `-EINVAL` or `-EBUSY`): with
-  `data=auto` the buffer streams over TCP on that connection, and its
-  `daqiri_data_path` reads `tcp`; with `data=udp` the open fails with
-  `-ENOTSUP`, and the context stays usable;
-- any other error fails the open: a transport failure, a payload size that is
-  not a whole number of samples of the enabled channels (`-EPROTO`), or, with
-  the socket engine, a source other than the YAML's `remote_addr`
-  (`-EADDRNOTAVAIL`).
+  `data=auto` the buffer streams over TCP on that connection, gives its queue
+  back, and its `daqiri_data_path` reads `tcp`; with `data=udp` the open fails
+  with `-ENOTSUP`, and the context stays usable;
+- any other error fails the open: a transport failure, an answer that does not
+  fit the request or the channels (`-EPROTO`, see below), or, with the socket
+  engine, a source other than the YAML's `remote_addr` (`-EADDRNOTAVAIL`).
 
-The probe's stream is never used. Each enable sends a fresh setup (a new
-stream ID, the sequence from 0), applies the same checks, then
-`ENABLE_BUFFER`; a refusal at that point fails the enable with the server's
-error and never falls back to TCP, since the data path was settled at open.
-After any error between a successful setup and a successful enable, the
-backend sends `DISABLE_BUFFER`, which drops the pending setup, before it
-returns the error. Disabling sends `DISABLE_BUFFER`, then keeps receiving for
-20 ms, since the board completes the datagram in progress before it answers.
-If `DISABLE_BUFFER` fails (a board answers `-ETIMEDOUT` when its sender did not
-drain), it is sent once more 100 ms later; if that fails too the buffer is
-closed (`CLOSE_BUFFER`), the error is returned and the queued blocks fail
-with it: the board may still be streaming.
+The probe's stream is never used: every enable sets up a stream of its own.
+Once the open has settled the data path, it never changes; a refusal at a
+later enable fails that enable.
 
 (daqiri-udp-sample-mode)=
 
-### UDP sample mode
+## UDP sample mode
 
 The server sends the samples of an enabled receive buffer as UDP datagrams to
 the host, and DAQIRI delivers them to a receive thread of the backend, one
-thread per open buffer. Each datagram is a 16-byte header (version, flags,
-payload length, stream ID, 64-bit sequence number) followed by the samples,
-in the device's own format and layout for the enabled channels, exactly as
-`iiod` sends them over TCP: the payload is copied into the blocks you queued
-unchanged, never byte-swapped, so any channel mask the server accepts works.
-The setup asks for the destination (`udp_dst=`, else the address of the
-YAML's interface, else the local address of the control connection), the UDP
-port of the queue (the socket engine's `local_addr`; on raw engines, the
-`udp_dst` of the flow that steers to the queue), and the largest payload the
-queue's buffers and the interface MTU take. The server answers the stream ID,
-the payload size of every datagram and the source.
+thread per open buffer. Each datagram is a 16-byte header (version 1, flags,
+payload length, stream ID, 64-bit sequence number, all big-endian) followed by
+the samples, in the device's own format and layout for the enabled channels,
+exactly as `iiod` sends them over TCP. The payload is copied into the blocks
+you queued unchanged, never byte-swapped, so any channel mask the server
+accepts works.
 
-For each datagram the backend checks the headers when the engine hands over
-raw frames, then the datagram header: another version or length is
-malformed, another stream ID (or, on raw engines, another source) is foreign;
-both are dropped and counted. The sequence number then tells exactly how many
-datagrams were lost, also late (reordered) and duplicate ones, which are
-dropped and counted, a late one taking back the loss it was counted as.
+(daqiri-udp-endpoint)=
+
+### Where the datagrams go
+
+The setup command asks the server for a destination address and port and a
+largest payload; the server answers with the stream ID, the payload size of
+every datagram and the source it sends from. The backend derives the request
+from the DAQIRI configuration, so the application sets nothing:
+
+| | Socket engine | Raw engines (ibverbs, DPDK) |
+|---|---|---|
+| Destination address | `udp_dst=` if set, else the address of `local_addr`, else the local IPv4 address of the management connection | `udp_dst=` if set, else the IPv4 address of the kernel's network interface on the NIC (it answers the board's ARP), else the `ipv4_dst` of the queue's flow rule, else the local IPv4 address of the management connection |
+| Destination port | The port of `local_addr` | The `udp_dst` of the first IPv4/UDP flow rule that steers to the queue |
+| Source of the datagrams | The engine connects its socket to `remote_addr`, so the kernel delivers nothing from another source: the source the server answers must be `remote_addr`, or the open or the enable fails with `-EADDRNOTAVAIL` (the error message names both addresses) | Not pinned by the engine: a frame from another source than the one the setup answered counts as foreign and is dropped |
+| Largest payload | The smallest of the queue's buffer size, `max_payload_size` (if set) and the interface MTU less 28 bytes (IPv4 and UDP), then less the 16-byte datagram header | The same, with the MTU of the NIC's interface, after taking 46 bytes (Ethernet, one VLAN tag, IPv4 and UDP headers) off the buffer size, which holds the whole frame |
+
+The MTU cap keeps every datagram whole on the wire: no IP fragmentation. The
+MTU is that of the interface that has `local_addr`'s address (socket engine) or
+of the NIC's PCI device (raw engines); an MTU the backend cannot find does not
+cap. At an MTU of 9000 the backend asks for at most 8956 bytes
+(9000 - 28 - 16), and a server that sends whole 16-byte beats of whole samples
+answers 8944 for a 4-byte sample set. Without a port, or with no address to
+give, the open fails (`-EINVAL`, `-EADDRNOTAVAIL`).
+
+The answer must fit: a payload size of zero, larger than the request, or that
+is not a whole number of samples of the enabled channels fails the open or the
+enable with `-EPROTO`. `tests/daqiri/resources/zcu102-socket.yaml` is a socket
+engine configuration for a board at 192.0.2.1 sending to a host at 192.0.2.2,
+both on UDP port 4991; its header comments on these rules.
+
+### The stream's lifecycle
+
+- **Open:** `OPEN_BUFFER`, then the probing setup, as above.
+- **Enable:** a fresh setup (a new stream ID, the sequence from 0) and the same
+  checks of its answer; at the first enable, the buffer's block on the server
+  (below); the receive thread programmed with the stream ID and payload size,
+  and started; then `ENABLE_BUFFER`.
+- **The block rule:** libiio does not enable a buffer that has no block, and
+  the blocks of a UDP buffer live on the host, so the first enable creates
+  **one block on the server**, of one payload, which is never enqueued and is
+  freed when the buffer is closed. A server that offers UDP sample mode
+  accepts that `CREATE_BLOCK` and `FREE_BLOCK` and never gets a
+  `TRANSFER_BLOCK` for the buffer.
+- **Errors at enable:** a setup that succeeded stays pending on the server
+  until an enable uses it, so after any error between a successful setup and a
+  successful `ENABLE_BUFFER` the backend sends `DISABLE_BUFFER`, which drops
+  it, before it returns the error. A refused setup fails the enable with the
+  server's error and never falls back to TCP.
+- **Disable:** `DISABLE_BUFFER`. The server completes the datagram in
+  progress before it answers, and that datagram may still be on its way: the
+  receive thread goes on for 20 ms, then stops, and a block it had begun to
+  fill starts over with the next stream. If `DISABLE_BUFFER` fails (a board
+  answers `-ETIMEDOUT` when its sender did not drain), it is sent once more
+  100 ms later; if that fails too the buffer is closed on the server
+  (`CLOSE_BUFFER`), the error is returned and the queued blocks fail with it:
+  the board may still be streaming. A later enable then fails with `-EBADF`.
+- **Close:** the receive thread is joined, the server-side block freed
+  (`FREE_BLOCK`), the buffer closed (`CLOSE_BUFFER`) and the queue given back.
+- **Cancel:** the blocked dequeues return `-ECANCELED` and the buffer's
+  connection is shut down, which ends the stream on the server.
+
+### Datagram checks
+
+For each datagram the backend checks the Ethernet, IPv4 and UDP headers when
+the engine hands over raw frames, then the datagram header: another version,
+a datagram shorter than its header, or a payload length or size other than
+the stream's payload size is malformed; another stream ID (or, on raw
+engines, another source) is foreign; both are dropped and counted. The 64-bit
+sequence number then tells exactly how many datagrams were lost, and which
+arrive late (reordered) or twice: those are dropped and counted, a late one
+taking back the loss it was counted as. Whether a datagram arrived before is
+known for the 1024 sequence numbers below the expected one; an older one counts
+as late.
 
 One buffer has one stream and one `(interface, queue)`. Blocks must be filled
 completely: a dequeued RX block always holds the full block size, which must
 be a whole number of samples.
+
+(daqiri-block-errors)=
+
+### Block errors and losses
 
 Block errors are returned by `iio_block_dequeue()`:
 
@@ -217,6 +283,7 @@ before the stream was started are dropped, not counted.
 
 | Attribute | Meaning |
 |---|---|
+| `daqiri_data_path` | `udp` or `tcp`: the data path of the open buffer, or the one the decision table would give it. |
 | `daqiri_rx_packets` | Datagrams of the stream delivered to the assembler. |
 | `daqiri_rx_bytes` | Payload bytes of those datagrams. |
 | `daqiri_rx_lost_packets` | Datagrams missing from the sequence (a late one that shows up afterwards is taken off again). |
@@ -235,12 +302,11 @@ before the stream was started are dropped, not counted.
 | `daqiri_blocks_completed` | Blocks filled. |
 | `daqiri_blocks_failed` | Blocks completed with an error (`-EIO`, ...); cancelled blocks are not counted. |
 | `daqiri_blocks_with_gaps` | Blocks that report a loss: every block failed with `-EIO` for a gap, a resynchronisation or a host overrun, and, with `lossy=1`, every block flagged for an overrun, or holding zero-fill. |
-| `daqiri_stream_id` | Stream ID from the setup of the last enable (hex); `0` before the first. |
+| `daqiri_stream_id` | Stream ID from the setup of the last enable (hex); `0` before the first. The probe's is never shown. |
 | `daqiri_last_error` | Last error, as a negative errno (0 if none). |
 | `daqiri_lossy` | The `lossy` setting. Read/write. |
 | `daqiri_mem_domain` | `host`, `pinned` or `device`. |
 | `daqiri_engine_kind` | DAQIRI engine in use: `socket`, `dpdk` or `ibverbs`; `none` over TCP. |
-| `daqiri_data_path` | `udp` or `tcp`: the data path of the open buffer, or the one the decision table would give it. |
 
 The context also has the static attributes `uri`, `ip,ip-addr`, `daqiri,yaml`,
 `daqiri,data`, `daqiri,mem`, `daqiri,engine` and `daqiri,version`.
@@ -248,9 +314,9 @@ The context also has the static attributes `uri`, `ip,ip-addr`, `daqiri,yaml`,
 ## Measuring
 
 `iio_daqiri_bench` queues blocks, receives for a given time and prints the
-rate, dequeue latency percentiles, CPU use and the counters above (as the
-difference over the run). It only uses the public API, so it runs against `ip:`
-as well:
+data path the buffer took (`daqiri_data_path`), the rate, dequeue latency
+percentiles, CPU use and the counters above (as the difference over the run).
+It only uses the public API, so it runs against `ip:` as well:
 
 ```
 iio_daqiri_bench -u "daqiri:192.168.2.1,data=udp,yaml=1g.yaml" \
@@ -264,6 +330,44 @@ default of 8 blocks is only a fraction of a millisecond of buffering, and a
 scheduling hiccup of the application shows up as `daqiri_rx_dropped_no_block`:
 raise `-n`.
 
+(daqiri-reference-server)=
+
+## Reference server: `iiod-emu --udp`
+
+libiio's emulator serves UDP sample mode for tests, on Linux only. With
+`--udp` it advertises `iiod,udp-stream`, answers the setup command and, once a
+buffer is enabled, sends the bytes of the device's `<device>_buf<n>.bin` sample
+file (next to the XML) as datagrams, over and over: an endless byte stream that
+wraps around in the middle of a datagram, as the emulator's TCP path serves
+the same file. The payload size is the largest multiple of 16 bytes and of the
+sample set that is at most the backend's limit and 9200 bytes.
+
+| Option | Meaning |
+|---|---|
+| `--udp` | Serve UDP sample mode. |
+| `--udp-from <ip:port>` | Send from there, default `127.0.0.1:25102`: the `remote_addr` of `tests/daqiri/resources/socket-udp-loopback.yaml`. |
+| `--udp-pps <n>` | Datagrams per second, copies included; `0` (the default) sends as fast as possible. |
+| `--udp-drop-every <n>`, `--udp-drop-list <a,b,...>`, `--udp-drop-prob <p>` with `--udp-seed <s>` | Drop datagrams: they keep their sequence numbers, so that the host sees the gap. |
+| `--udp-reorder-window <k>` | Send datagram mk just before mk-1, for every m. |
+| `--udp-dup-every <n>` | Send datagrams n-1, 2n-1, ... twice in a row. |
+| `--udp-json <file>` | The oracle: at every disable, how many datagrams the last enable sent (copies included), dropped, reordered (pairs) and duplicated. |
+
+On a loopback, against the loopback configuration:
+
+```
+iiod-emu --udp --udp-pps 2000 emu:tests/resources/xmls/fmcomms2.xml &
+iio_daqiri_bench \
+    -u "daqiri:127.0.0.1,data=udp,yaml=tests/daqiri/resources/socket-udp-loopback.yaml" \
+    -d cf-ad9361-lpc -c voltage0,voltage1 -s 9200 -n 64 -T 3
+```
+
+The report shows `data_path udp` and, with no injection, every loss counter
+at zero; with `--udp-drop-every 100`, `daqiri_rx_lost_packets` grows by what
+the emulator dropped. Unpaced, the emulator outruns a loopback socket and the
+host's blocks, which shows as losses and overruns. Without `--udp` the
+emulator, like a stock `iiod`, refuses the setup command with `-ENOTSUP` and
+logs it; the backend never sends it there, since nothing is advertised.
+
 ## Limitations
 
 - **One YAML per process.** DAQIRI initialises once; a second `daqiri:`
@@ -273,8 +377,9 @@ raise `-n`.
   exit, and the module pins itself in memory, because the DAQIRI engines do
   not support a shutdown/init cycle in one process. Buffers and their threads
   are still released when you close them.
-- **Socket engine only.** DPDK, raw ibverbs (ConnectX) and GPU memory
-  (`mem=device`) come in later phases; the socket engine is a functional and
+- **The socket engine is the tested path.** UDP sample mode has not yet run
+  through the DPDK or raw ibverbs engines (ConnectX), and GPU memory
+  (`mem=device`) comes in a later phase; the socket engine is a functional and
   loss-accounting tier, not a 100G path.
 - **UDP sample mode is receive only.** There is no UDP transmit and no
   cyclic buffer (`-ENOTSUP`); with `data=auto` output buffers use TCP.
@@ -283,8 +388,6 @@ raise `-n`.
 - **The server may refuse a channel mask** it cannot stream (`-ENOTSUP` at
   setup: TCP with `data=auto`, a failed open with `data=udp`).
 - **Late datagrams are dropped** (and counted), not put back in order.
-  Whether a late datagram arrived before is known for the 1024 sequence
-  numbers below the expected one; an older one counts as late.
 - Linux only.
 
 ## Security

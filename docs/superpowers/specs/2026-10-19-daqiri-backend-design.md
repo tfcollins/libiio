@@ -29,6 +29,19 @@ tests on the labgrid fleet (coordinator 10.0.0.41:20408).
 | GPU | Design the device-memory path now; host memory is the baseline. |
 | Packaging (my call) | Dynamic module `libiio-daqiri.so` via WITH_MODULES, so the C core never links C++/CUDA. |
 
+**Superseded (note of 2026-10-31).** The owner's decision of 2026-10-26 supersedes two
+of the decisions above. First, "No iiod/tinyiiod/Zephyr changes": a new iiod command,
+`IIOD_OP_UDP_STREAM_SETUP`, sets UDP sample mode up, and a server advertises it with the
+context attribute `iiod,udp-stream`; without a UDP stream provider, iiod, tinyiiod and
+Zephyr refuse the command with `-ENOTSUP` and log it, and otherwise behave as before.
+Second, the VITA 49.2
+framing, `framing=vrt`: UDP sample mode replaces it (datagrams of a 16-byte header with a
+64-bit sequence number, then the device's own samples), and the URI key `data=auto|udp|tcp`
+replaces `framing=` (`framing=iiod` is now `data=tcp`). The VITA 49.2 parts of this design
+(prologue parser, packet-count and timestamp gap tracker, `vrt_sender`, `sid`, `sid_mask`,
+`swap`, `gap_ts`, `daqiri_rx_context_packets`) are gone from the code;
+`doc/source/daqiri-backend.md` documents the backend as built.
+
 ### Verified lab facts
 
 | Tier | Sender (place) | Receiver NIC | Notes |

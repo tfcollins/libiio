@@ -1,13 +1,16 @@
 # DAQIRI backend tests
 
-Tests of the `daqiri:` backend (`daqiri*.c`, `daqiri-engine.cpp`) and the
-tools they use. User documentation is `doc/source/daqiri-backend.md`; build
-notes for DAQIRI itself are in `CI/daqiri/README.md`.
+Tests of the `daqiri:` backend (`daqiri*.c`, `daqiri-engine.cpp`), of the iiod
+side of UDP sample mode (the setup command, the responder's provider rules,
+`iiod-emu --udp`) and of the tools they use. User documentation is
+`doc/source/daqiri-backend.md`; build notes for DAQIRI itself are in
+`CI/daqiri/README.md`.
 
 ## Configure
 
-The unit tests need nothing but `-DWITH_TESTS=ON`. The loopback tests need the
-module, the emulator and the build tree as module directory:
+The unit tests need nothing but `-DWITH_TESTS=ON`. The emulator tests need
+`iiod-emu` and the emu backend; the loopback tests also need the module and
+the build tree as module directory:
 
     cmake -S . -B build-daqiri -DWITH_MODULES=ON -DWITH_DAQIRI_BACKEND=ON \
         -DWITH_TESTS=ON -DWITH_EMU_BACKEND=ON -DWITH_EMU_BACKEND_DYNAMIC=OFF \
@@ -16,63 +19,105 @@ module, the emulator and the build tree as module directory:
         -DIIO_MODULES_DIR_OVERRIDE=$PWD/build-daqiri/
     cmake --build build-daqiri -j
 
+The emulator's UDP sample mode (`--udp`, `--udp-mock-provider`) is built on
+Linux only; the tests that need it are left out elsewhere.
+
 ## Unit tests (label `daqiri`)
 
-No DAQIRI, CUDA, network or board: they run in the plain `tests.yml` job.
+No DAQIRI, CUDA, network or board: they run in the plain `tests.yml` job and
+in the `unit-no-daqiri` job of `daqiri.yml`.
 
     ctest --test-dir build-daqiri -L '^daqiri$' --output-on-failure
 
-`test_vrt_prologue` (header parsing against the golden vectors),
-`test_vrt_gap` (packet count / timestamp loss detection) and
-`test_vrt_assembler` (block assembly: boundaries, straddling packets, short
-tails, zero-fill) and `test_l2_parse` (Ethernet/802.1Q/IPv4/UDP parser for raw
-queues: the `l2-*.bin` golden vectors and every prefix of a valid frame).
+| Test | What it covers |
+|---|---|
+| `test_udp_header` | datagram header checks against the `udp-*.bin` golden vectors: version, stream ID, lengths, a header cut short |
+| `test_udp_seq` | the 64-bit sequence tracker: in order, gaps (1, 1000, over 1024: resync), late datagrams taking a loss back, duplicates, foreign and malformed datagrams, the restart at 0 of a new stream |
+| `test_udp_hds_split` | datagrams cut in two by header-data split, at every interesting boundary |
+| `test_asm` | the block assembler: boundaries, payloads straddling blocks, zero-fill |
+| `test_l2_parse` | the Ethernet/802.1Q/IPv4/UDP parser of raw queues: the `l2-*.bin` golden vectors and every prefix of a valid frame |
+| `test_udp_stream_codec` | the setup command's request and response tails and the datagram header (`iiod-udp-stream.h`), network order |
+
+## Emulator tests (label `daqiri-emu`)
+
+The iiod-client API over a plain TCP socket against `iiod-emu` on
+127.0.0.1:30431 (`with_emu.sh`); neither the module nor DAQIRI. They share the
+ports with the loopback tests, so run them one at a time:
+
+    ctest --test-dir build-daqiri -L daqiri-emu -j1 --output-on-failure
+
+| Test | What it covers |
+|---|---|
+| `daqiri_udp_setup_emu` | a server with no UDP provider answers the setup with `-ENOTSUP` and the connection stays usable |
+| `daqiri_udp_emu_server` | `iiod-emu --udp --udp-drop-every 10` seen from a plain UDP socket on 127.0.0.1:25101: payload sizing, every datagram's source, header and payload against the sample file, the oracle; a second enable restarts the sequence under a new stream ID |
+| `daqiri_udp_emu_prompt_stop` | at one datagram per second, DISABLE, CLOSE_BUFFER and a lost connection stop the stream at once |
+| `daqiri_udp_provider_contract` | the responder's rules for providers, against the logging mock provider (`--udp-mock-provider`) |
+| `daqiri_udp_setup_short_tail` | a setup answer cut short: the client gives up without the late bytes landing in memory it no longer owns |
 
 ## Loopback tests (label `daqiri-loopback`)
 
-Each starts its own `iiod-emu` on 127.0.0.1:30431 through `with_emu.sh`, and
-the `framing=vrt` ones use the DAQIRI socket engine on 127.0.0.1:25101 with
-`resources/socket-udp-loopback.yaml`. They share the ports, so run them one at
-a time:
+The `daqiri:` backend against the emulator on 127.0.0.1:30431, and in UDP
+sample mode through the DAQIRI socket engine on 127.0.0.1:25101 with
+`resources/socket-udp-loopback.yaml` (which only receives from
+127.0.0.1:25102). ctest serialises them with `RESOURCE_LOCK iiod-emu-30431`
+and `daqiri-udp-25101`; run them one at a time:
 
     ctest --test-dir build-daqiri -L daqiri-loopback -j1 --output-on-failure
 
 | Test | What it covers |
 |---|---|
-| `daqiri_context` | management plane against `ip:` |
-| `daqiri_block_equivalence` | `daqiri:...,framing=iiod` carries the same bytes and context as `ip:` |
-| `daqiri_lifecycle`, `daqiri_lifecycle_mixed` | block states, destroy with a buffer open, one YAML per process, `daqiri_*` attributes |
-| `daqiri_vrt_loopback` | `vrt_sender` to the engine: block contents and counters against the sender's `--json` oracle, clean and with drops (`lossy=0` and `1`), reordering, duplicates, a host overrun (slow consumer) and a burst gap |
-| `daqiri_loopback_api` | the `api` tests over `daqiri:...,framing=iiod` for every emu XML (`run_loopback.sh`); `DAQIRI_LOOPBACK_URI=ip:127.0.0.1` runs the control through `ip:` |
+| `daqiri_context` | management plane against `ip:`; URI keys (the removed `framing=` ones refused); `daqiri_data_path` over TCP |
+| `daqiri_block_equivalence` | `daqiri:...,data=tcp` carries the same bytes and context as `ip:`; cancel, `data_port`; `data=auto` without a YAML streams over TCP |
+| `daqiri_lifecycle`, `daqiri_lifecycle_mixed` | `data=udp` against the mock provider: block states, destroy with a buffer open, one YAML per process, one buffer per queue, the `daqiri_*` attributes, refused probes (TCP with `data=auto`, `-ENOTSUP` with `data=udp`), hand-built datagrams (gaps, resyncs, also with no block queued, zero-fill, the restart after a new enable); the decision table against an advertising server (`data=udp` without a YAML: `-EINVAL`; `data=auto` without one: TCP, no setup sent); a setup refused at enable: the enable fails with the server's error, no fallback, and the DISABLE that drops the pending probe shows in the mock's log. `--mixed`: 16- and 32-bit channels in one buffer |
+| `daqiri_lifecycle_wrong_source` | `iiod-emu --udp` sending from another port than the YAML's `remote_addr`: `-EADDRNOTAVAIL`, with `data=udp` and `data=auto` |
+| `daqiri_engine_udp_endpoint` | the engine shim's view of a YAML, only parsed: `local_addr`/`remote_addr` of the socket engine YAMLs (loopback, ZCU102), and the flow rules of a raw (ibverbs) YAML in the right byte order; that part is skipped, saying so, when DAQIRI has no raw engine |
+| `daqiri_udp_loopback` | UDP sample mode end to end against `iiod-emu --udp`, one emulator per case with its own injection flags: `clean`, `drop_list`, `drop_list_lossy` (exact zero-fill), `reorder`, `duplicate`, `slow_consumer` and `slow_consumer_lossy` (a host overrun), `burst_gap` (500 ms disabled, then a new stream); every block identified byte for byte against the sample file, the counters against the emulator's oracle |
+| `daqiri_udp_equivalence` | the same device and mask through `data=tcp` and `data=udp`: the same bytes, the sample file repeated, over 31 cycles of it |
+| `daqiri_auto_fallback` | the plain emulator (no `--udp`): `data=auto` with a YAML streams over TCP, never sends the setup (the server would log it) and never starts the engine |
+| `daqiri_udp_refused` | the plain emulator: `data=udp` fails the open with `-ENOTSUP` without asking the server; the context still reads attributes, and a `data=tcp` context opens the buffer meanwhile |
+| `daqiri_loopback_api` | the `api` tests over `daqiri:...,data=tcp` for every emu XML (`run_loopback.sh`); `DAQIRI_LOOPBACK_URI=ip:127.0.0.1` runs the control through `ip:` |
 
-`with_emu.sh <xml> <cmd...>` runs a command against an emulator serving
-`emu:<xml>` (use an absolute path for the XML). Set `IIOD_EMU` to the
-`iiod-emu` binary (`build-daqiri/iiod-emu/iiod-emu`). It refuses to run when
-the port is taken.
+`daqiri_udp_loopback`'s oracle checks: every datagram sent arrived
+(`rx_packets` + late + duplicates == `sent`), late == `reordered`,
+duplicates == `duplicated`, and lost == `dropped` less the drops past the last
+datagram sent, which the host cannot see. The emulator is paced (`--udp-pps`)
+in every case, so that the oracle stays exact.
 
-## The software sender
+`with_emu.sh [--emu-args <arg>... --] <xml> <cmd...>` runs a command against
+an emulator serving `emu:<xml>` (use an absolute path for the XML), with the
+arguments between `--emu-args` and `--` given to the emulator, and
+`IIOD_EMU_LOG` naming the file that collects the emulator's output, which the
+command may read. Set `IIOD_EMU` to the `iiod-emu` binary
+(`build-daqiri/iiod-emu/iiod-emu`). It refuses to run when the port is taken.
 
-`vrt_sender` (built in `build-daqiri/tests/daqiri/`) is a stand-in for a
-hardware VITA 49.2 framer: IF-Data packets over UDP, from the YAML's
-`remote_addr`, with a ramp or a replayed file as payload and optional drops,
-reordering and duplicates. `vrt_sender --help` lists the options.
+## The reference server by hand
 
-To run it by hand, with a benchmark:
+`iiod-emu --udp` serves UDP sample mode: it streams the emulated device's
+sample file (`<device>_buf<n>.bin` next to the XML) as datagrams, from
+`--udp-from` (default 127.0.0.1:25102, the loopback YAML's `remote_addr`),
+paced by `--udp-pps`, with drops, reordering and duplicates on request, and
+writes its oracle with `--udp-json`. `iiod-emu --help` lists the options.
+
+To run it by hand, with the benchmark:
 
     export IIOD_EMU=$PWD/build-daqiri/iiod-emu/iiod-emu
-    tests/daqiri/with_emu.sh $PWD/tests/resources/xmls/fmcomms2.xml sh -c '
-        (sleep 0.3; exec build-daqiri/tests/daqiri/vrt_sender \
-            --to 127.0.0.1:25101 --duration 7 --pps 20000 --source ramp) &
+    tests/daqiri/with_emu.sh --emu-args --udp --udp-pps 2000 \
+            --udp-drop-every 100 --udp-json /tmp/oracle.json -- \
+            $PWD/tests/resources/xmls/fmcomms2.xml \
         build-daqiri/utils/iio_daqiri_bench \
-            -u "daqiri:127.0.0.1,framing=vrt,yaml=$PWD/tests/daqiri/resources/socket-udp-loopback.yaml" \
-            -d cf-ad9361-lpc -c voltage0,voltage1 -s 1440 -n 64 -T 5 \
-            --check ramp -j /tmp/perf.json
-        wait'
+            -u "daqiri:127.0.0.1,data=udp,yaml=$PWD/tests/daqiri/resources/socket-udp-loopback.yaml" \
+            -d cf-ad9361-lpc -c voltage0,voltage1 -s 9200 -n 64 -T 3
+    cat /tmp/oracle.json
 
-The sender is started after the benchmark has its buffer: a stream drops
-whatever arrived before it started. The run should end with `bad_samples 0`
-and about 0.23 Gbit/s. The benchmark needs `-c`: the default is all four
-channels of the device, which is not the stream layout.
+The report starts with `data_path udp`. `daqiri_rx_lost_packets` comes close
+to what the oracle says was dropped: the benchmark reads its counters just
+before it closes the buffer, the emulator writes the oracle at the close. The
+blocks that followed a loss fail (`daqiri_blocks_failed`). Without
+`--udp-drop-every` every loss counter stays at zero. Unpaced (`--udp-pps 0`,
+the default) the emulator outruns the loopback socket and 64 blocks: losses
+and overruns then come from the host, not from the emulator. The emulator's
+log shows two setups per run, the probe at open and the setup of the enable,
+and only the second stream starts.
 
 ## Golden vectors
 
@@ -90,19 +135,31 @@ sample n with `I = n & 0x7FFF` and `Q = (0x8000 - n) & 0xFFFF`, little-endian
 int16 I at offset 0 and Q at offset 2, as the device sends them: UDP sample
 mode never swaps. `iio_daqiri_bench --check ramp` uses the same definition.
 
+## Configurations
+
+| File | What for |
+|---|---|
+| `resources/socket-udp-loopback.yaml` | the socket engine on 127.0.0.1:25101, receiving from 127.0.0.1:25102 only: the loopback tests |
+| `resources/zcu102-socket.yaml` | the socket engine for the ADRV9002 + ZCU102 board (192.0.2.1) over its 10G link to the host (192.0.2.2), UDP port 4991 at both ends; its header explains the tuple rule of `local_addr` and `remote_addr` |
+| `resources/raw-flows-ibverbs.yaml` | parsed only, never started: two ibverbs queues and their flow rules, for `daqiri_engine_udp_endpoint` |
+| `resources/raw-sw-loopback-dpdk.yaml` | the DPDK engine's software loopback (no NIC), for `daqiri-probe-raw` (`CI/daqiri/README.md`) |
+
 ## Manual gate: a Kuiper board with ASCII-only `iiod`
 
 Boards that ship libiio 0.25 (Kuiper 2023_R2_P1) run an `iiod` that speaks only
-the ASCII protocol. No CI job has one; run this once per change to the
-`framing=iiod` data path, with a board on the network:
+the ASCII protocol. No CI job has one; run this once per change to the TCP data
+path (`data=tcp`), with a board on the network:
 
-- [ ] `iio_info -u daqiri:<board>,framing=iiod` shows the same devices and
+- [ ] `iio_info -u daqiri:<board>,data=tcp` shows the same devices and
       channels as `iio_info -u ip:<board>` (the `daqiri,*` context attributes
       are extra).
-- [ ] `iio_rwdev -u daqiri:<board>,framing=iiod -b 4096 -s 16384 cf-ad9361-lpc voltage0 voltage1 > d.bin`
+- [ ] `iio_rwdev -u daqiri:<board>,data=tcp -b 4096 -s 16384 cf-ad9361-lpc voltage0 voltage1 > d.bin`
       captures data, and with the board in a fixed test pattern, matches what `ip:<board>`
       produces.
-- [ ] `iio_daqiri_bench -u daqiri:<board>,framing=iiod -d cf-ad9361-lpc -s 65536 -T 5`
+- [ ] `iio_daqiri_bench -u daqiri:<board>,data=tcp -d cf-ad9361-lpc -s 65536 -T 5`
       completes, and its rate is comparable to the same run through `ip:`.
 - [ ] Creating a block with the board's ASCII `iiod` falls back to the library's
       buffer path (no native blocks) and does not fail.
+- [ ] `data=auto` (the default) against the board also streams over TCP: its
+      `iiod` does not advertise UDP sample mode, and `daqiri_data_path` reads
+      `tcp`.

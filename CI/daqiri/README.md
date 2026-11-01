@@ -115,7 +115,9 @@ the spec only; the backend pins the engine for process lifetime.
         -DCMAKE_PREFIX_PATH=$HOME/opt/daqiri -DCUDAToolkit_ROOT=/usr/local/cuda-13.4 \
         -DIIO_MODULES_DIR_OVERRIDE=$PWD/build-daqiri/
     cmake --build build-daqiri -j
-    ctest --test-dir build-daqiri -L daqiri-loopback --output-on-failure
+    ctest --test-dir build-daqiri -L '^daqiri$' --output-on-failure
+    ctest --test-dir build-daqiri -L daqiri-emu -j1 --output-on-failure
+    ctest --test-dir build-daqiri -L daqiri-loopback -j1 --output-on-failure
 
 The module needs Linux, `BUILD_SHARED_LIBS` and `WITH_MODULES` (configure stops
 otherwise). It enables the C++ language only; the CUDA language is not enabled,
@@ -152,32 +154,25 @@ module, `libiio-emu.so` calls the non-exported `iio_strndup`, and iiod-emu
 crashes on the first attribute write; `tests/daqiri/CMakeLists.txt` warns at
 configure time when the option is ON.
 
-The `daqiri-loopback` label runs:
+The `daqiri-loopback` label runs the backend against the emulator: the
+management plane and the TCP data path (`data=tcp`) against `ip:`, the `api`
+label through `daqiri:` for every emu XML (`run_loopback.sh`), and UDP sample
+mode through the DAQIRI socket engine with
+`tests/daqiri/resources/socket-udp-loopback.yaml` (UDP server
+`127.0.0.1:25101`, accepting only datagrams from `127.0.0.1:25102`; ctest also
+holds `RESOURCE_LOCK daqiri-udp-25101`): the buffer lifecycle against the
+emulator's mock provider, and end to end against `iiod-emu --udp`, the
+reference server, with loss injection checked against its oracle. The
+`daqiri-emu` label covers the iiod side of UDP sample mode without the module.
+`tests/daqiri/README.md` lists every test. The engine logs at WARN and above
+unless `IIO_DAQIRI_DEBUG` is set.
 
-- `daqiri_context`: the management plane against `ip:`.
-- `daqiri_block_equivalence`: `cf-ad9361-lpc` voltage0+voltage1 streamed
-  through `ip:` and `daqiri:…,framing=iiod` must carry the same bytes, and
-  both context XMLs must match once the backend's own attributes are removed.
-  It also covers buffer cancel and `data_port`. iiod-emu fills a block with at
-  most one wrap of its `.bin`, so the test serves a build-tree copy of
-  `fmcomms2.xml` whose `cf-ad9361-lpc_buf0.bin` is the stock file three times
-  over (longer than a 4096-byte block).
-- `daqiri_lifecycle`: `framing=vrt` over the DAQIRI socket engine, with
-  `tests/daqiri/resources/socket-udp-loopback.yaml` (UDP server
-  `127.0.0.1:25101`, accepting only datagrams from `127.0.0.1:25102`; ctest
-  also holds `RESOURCE_LOCK daqiri-udp-25101`). Covers the block states
-  (`-EBUSY`, `-ETIMEDOUT`, `-ECANCELED`, `-EPERM`), `iio_context_destroy` with
-  a buffer open, one YAML per process (`-EBUSY`), one buffer per
-  `(port, queue)`, RX only, the `daqiri_*` buffer attributes, and a few
-  hand-built VRT packets (`-EIO` on a gap, `-EPROTO` until disabled). The
-  engine logs at WARN and above unless `IIO_DAQIRI_DEBUG` is set.
-- `daqiri_loopback_api`: `tests/daqiri/run_loopback.sh` runs the `api` label
-  once per XML in `tests/resources/xmls/` with
-  `TESTS_API_URI=daqiri:127.0.0.1,framing=iiod`. The api buffer tests skip
-  quietly when a buffer does not open, so each XML first runs
-  `test_daqiri_open`, which must open a buffer through the same URI (the
-  script lists the XMLs that have none). The script also fails when ctest
-  selects no api tests or not all of them pass. Set
-  `DAQIRI_LOOPBACK_URI=ip:127.0.0.1` to run the same thing through `ip:` as a
-  control. Nothing is excluded: all `api` tests pass through `ip:`, as in
-  `.github/workflows/zephyr-tests.yml`.
+`daqiri_loopback_api` (`tests/daqiri/run_loopback.sh`) runs the `api` label
+once per XML in `tests/resources/xmls/` with
+`TESTS_API_URI=daqiri:127.0.0.1,data=tcp`. The api buffer tests skip quietly
+when a buffer does not open, so each XML first runs `test_daqiri_open`, which
+must open a buffer through the same URI (the script lists the XMLs that have
+none). The script also fails when ctest selects no api tests or not all of
+them pass. Set `DAQIRI_LOOPBACK_URI=ip:127.0.0.1` to run the same thing
+through `ip:` as a control. Nothing is excluded: all `api` tests pass through
+`ip:`, as in `.github/workflows/zephyr-tests.yml`.
