@@ -98,9 +98,10 @@ static ssize_t read_str(const struct iio_attr *attr, char *dst, size_t len)
 	return ret;
 }
 
-static struct iio_context *open_ctx(const char *uri)
+static struct iio_context *open_ctx(const char *uri, unsigned int flags)
 {
-	struct iio_context *ctx = iio_create_context(NULL, uri);
+	struct iio_context_params params = { .flags = flags };
+	struct iio_context *ctx = iio_create_context(&params, uri);
 
 	if (iio_err(ctx)) {
 		printf("  Unable to create context %s: %d\n", uri, iio_err(ctx));
@@ -112,8 +113,9 @@ static struct iio_context *open_ctx(const char *uri)
 
 TEST_FUNCTION(contexts)
 {
-	ctx_d = open_ctx(DAQIRI_URI);
-	ctx_i = open_ctx(IP_URI);
+	/* iio_context_get_xml() reads every attribute then (indices_after_xml) */
+	ctx_d = open_ctx(DAQIRI_URI, IIO_CTX_XML_INCLUDE_VALUES);
+	ctx_i = open_ctx(IP_URI, 0);
 
 	TEST_ASSERT_PTR_NOT_NULL(ctx_d, "daqiri context created");
 	TEST_ASSERT_PTR_NOT_NULL(ctx_i, "ip context created");
@@ -128,19 +130,14 @@ TEST_FUNCTION(contexts)
  * The server's attributes keep the server's positions, which ip:'s are: the
  * first attributes of a daqiri: buffer are ip:'s, in ip:'s order, and the
  * daqiri_* ones follow. Sorted into the list, the daqiri_* names would come
- * before data_available and every other name.
+ * before data_available and every other name. <when> goes in the messages.
  */
-TEST_FUNCTION(remote_indices)
+static void check_remote_indices(const char *when)
 {
 	unsigned int i, j, k, nd, ni, nb_bufs = 0;
 	const struct iio_buffer *bd, *bi;
 	const struct iio_device *dev;
-	char msg[160];
-
-	if (!ctx_d || !ctx_i) {
-		TEST_ASSERT(false, "both contexts available");
-		return;
-	}
+	char msg[200];
 
 	for (i = 0; i < iio_context_get_devices_count(ctx_d); i++) {
 		dev = iio_context_get_device(ctx_d, i);
@@ -148,8 +145,8 @@ TEST_FUNCTION(remote_indices)
 		for (j = 0; j < iio_device_get_buffers_count(dev); j++) {
 			bd = iio_device_get_buffer(dev, j);
 			bi = ip_buffer(dev, j);
-			snprintf(msg, sizeof(msg), "%s buffer%u in the ip context", dev_label(dev),
-					j);
+			snprintf(msg, sizeof(msg), "%s: %s buffer%u in the ip context", when,
+					dev_label(dev), j);
 			TEST_ASSERT_PTR_NOT_NULL(bi, msg);
 			if (!bi)
 				continue;
@@ -158,21 +155,24 @@ TEST_FUNCTION(remote_indices)
 			nd = iio_buffer_get_attrs_count(bd);
 			ni = iio_buffer_get_attrs_count(bi);
 
-			snprintf(msg, sizeof(msg), "%s buffer%u (%s): the server's %u attributes%s",
+			snprintf(msg, sizeof(msg),
+					"%s: %s buffer%u (%s): the server's %u attributes%s", when,
 					dev_label(dev), j,
 					iio_buffer_is_output(bd) ? "output" : "input", ni,
 					iio_buffer_is_output(bd) ? "" : " and the daqiri_* ones");
 			TEST_ASSERT_EQ(nd, ni + (iio_buffer_is_output(bd) ? 0 : NB_LOCAL), msg);
 
 			for (k = 0; k < ni && k < nd; k++) {
-				snprintf(msg, sizeof(msg), "%s buffer%u attr %u as through ip:",
+				snprintf(msg, sizeof(msg),
+						"%s: %s buffer%u attr %u as through ip:", when,
 						dev_label(dev), j, k);
 				TEST_ASSERT_STR_EQ(iio_attr_get_name(iio_buffer_get_attr(bd, k)),
 						iio_attr_get_name(iio_buffer_get_attr(bi, k)), msg);
 			}
 
 			for (k = ni; k < nd; k++) {
-				snprintf(msg, sizeof(msg), "%s buffer%u attr %u is a daqiri_* one",
+				snprintf(msg, sizeof(msg),
+						"%s: %s buffer%u attr %u is a daqiri_* one", when,
 						dev_label(dev), j, k);
 				TEST_ASSERT(is_local_name(iio_attr_get_name(
 							    iio_buffer_get_attr(bd, k))),
@@ -181,7 +181,18 @@ TEST_FUNCTION(remote_indices)
 		}
 	}
 
-	TEST_ASSERT(nb_bufs > 0, "buffers compared");
+	snprintf(msg, sizeof(msg), "%s: buffers compared", when);
+	TEST_ASSERT(nb_bufs > 0, msg);
+}
+
+TEST_FUNCTION(remote_indices)
+{
+	if (!ctx_d || !ctx_i) {
+		TEST_ASSERT(false, "both contexts available");
+		return;
+	}
+
+	check_remote_indices("at creation");
 }
 
 /* Every attribute that the server serves reads the same through both */
@@ -313,6 +324,78 @@ TEST_FUNCTION(local_attrs)
 	TEST_ASSERT(nb_inputs > 0, "input buffers checked");
 }
 
+/* Nothing sorts the attributes again later: not a buffer opened (checked while
+ * it is open) and closed */
+TEST_FUNCTION(indices_after_buffer)
+{
+	static const char *const chans[] = { "voltage0", "voltage1" };
+	struct iio_buffer_stream *stream;
+	struct iio_channels_mask *mask;
+	const struct iio_device *dev;
+	struct iio_channel *chn;
+	struct iio_buffer *buf;
+	unsigned int i;
+	int ret;
+
+	if (!ctx_d || !ctx_i) {
+		TEST_ASSERT(false, "both contexts available");
+		return;
+	}
+
+	dev = iio_context_find_device(ctx_d, "cf-ad9361-lpc");
+	buf = dev ? iio_device_get_buffer(dev, 0) : NULL;
+	TEST_ASSERT_PTR_NOT_NULL(buf, "cf-ad9361-lpc buffer0 via daqiri:");
+	if (!buf)
+		return;
+
+	mask = iio_create_channels_mask(iio_device_get_channels_count(dev));
+	TEST_ASSERT_PTR_NOT_NULL(mask, "channel mask");
+	if (!mask)
+		return;
+
+	for (i = 0; i < sizeof(chans) / sizeof(chans[0]); i++) {
+		chn = iio_device_find_channel(dev, chans[i], false);
+		TEST_ASSERT_PTR_NOT_NULL(chn, chans[i]);
+		if (chn)
+			iio_channel_enable(chn, mask);
+	}
+
+	stream = iio_buffer_open(buf, mask);
+	ret = iio_err(stream);
+	TEST_ASSERT_EQ(ret, 0, "cf-ad9361-lpc buffer0 opened through daqiri:");
+	if (!ret) {
+		check_remote_indices("with a buffer open");
+		iio_buffer_close(stream);
+		check_remote_indices("after the buffer closed");
+	}
+
+	iio_channels_mask_destroy(mask);
+}
+
+/* Nor iio_context_get_xml(), which with IIO_CTX_XML_INCLUDE_VALUES reads every
+ * attribute into a table as long as the list, and frees it again */
+TEST_FUNCTION(indices_after_xml)
+{
+	static const char value[] = "<attribute name=\"daqiri_data_path\" value=\"tcp\"";
+	char *xml;
+	int ret;
+
+	if (!ctx_d || !ctx_i) {
+		TEST_ASSERT(false, "both contexts available");
+		return;
+	}
+
+	xml = iio_context_get_xml(ctx_d);
+	ret = iio_err(xml);
+	TEST_ASSERT_EQ(ret, 0, "iio_context_get_xml() of the daqiri context");
+	if (!ret) {
+		TEST_ASSERT(strstr(xml, value) != NULL, "the XML has the values");
+		free(xml);
+	}
+
+	check_remote_indices("after iio_context_get_xml()");
+}
+
 /*
  * A write through daqiri: reaches the server's attribute. The emulator takes
  * a write to any attribute but those whose names end in _available (it
@@ -374,6 +457,8 @@ int main(void)
 	RUN_TEST(remote_indices);
 	RUN_TEST(remote_reads);
 	RUN_TEST(local_attrs);
+	RUN_TEST(indices_after_buffer);
+	RUN_TEST(indices_after_xml);
 	RUN_TEST(remote_write);
 
 	if (ctx_d)
