@@ -71,7 +71,7 @@ Unknown keys, and values that do not parse, make context creation fail with
 | `yaml` | path | `$IIO_DAQIRI_YAML` | DAQIRI configuration. Needed for UDP sample mode only. |
 | `udp_dst` | IPv4 address | derived from the YAML, see [Where the datagrams go](#daqiri-udp-endpoint) | Where the server sends the datagrams. `0.0.0.0` is refused. |
 | `mem` | `host`, `pinned`, `device` | `host` | Memory of the blocks. `pinned` is `cudaHostAlloc` memory. `device` is not supported in this phase. |
-| `gpu` | CUDA ordinal | `0` | GPU used for `mem=pinned` and `mem=device`. |
+| `gpu` | CUDA ordinal | `0` | Accepted and checked (a non-negative integer) but without effect for now: `mem=pinned` memory is portable (`cudaHostAllocPortable`), usable from every GPU, and `mem=device` is refused (`-ENOTSUP` when a UDP buffer opens). |
 | `iface` | name or address | the first interface of the YAML | Which `interfaces:` entry of the YAML to receive on. |
 | `rxq` | queue id | `0` | Receive queue of that interface. |
 | `lossy` | `0`, `1` | `0` | Lost datagrams in UDP sample mode: `0` fails the block (`-EIO`), `1` zero-fills exactly the lost payloads and goes on (up to 1024 lost datagrams; host overruns are flagged, not filled; see [Block errors and losses](#daqiri-block-errors)). Readable and writable at run time as the `daqiri_lossy` buffer attribute. |
