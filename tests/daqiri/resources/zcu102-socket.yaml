@@ -1,5 +1,5 @@
 # DAQIRI socket engine for data=udp from the ADRV9002 + ZCU102 board (stage 1)
-# over its 10G link (lane 0) to nemo: the host is 192.0.2.2, the board
+# over its 10G link (lane 0) to the host: the host is 192.0.2.2, the board
 # 192.0.2.1, with an MTU of 9000 on the link.
 #
 # The tuple rule. The engine binds local_addr and connect()s its UDP socket to
