@@ -185,3 +185,45 @@ path (`data=tcp`), with a board on the network:
 - [ ] `data=auto` (the default) against the board also streams over TCP: its
       `iiod` does not advertise UDP sample mode, and `daqiri_data_path` reads
       `tcp`.
+
+### Gate record (ZCU102 + ADRV9002, Kuiper 2023_R2, libiio 0.26), 2026-11-02
+
+All five items passed at `6943650b`.
+
+**Board.** ZCU102 + ADRV9002 (LVDS) on the stock Kuiper 2023_R2_P1 boot files:
+
+- kernel `6.1.70-284114-g2e8908932dfd`;
+- HDL `hdl_2023_r2`;
+- Kuiper 11.2 (bullseye) userland.
+
+Its `iiod` is libiio **0.26** (`5e1e9cb`) and speaks only the ASCII protocol: `BINARY` is
+answered `-22`, and `VERSION` answers `0.26.5e1e9cb`. This board ships 0.26, not the 0.25 named
+above.
+
+**Adapted to the board.** Device `axi-adrv9002-rx-lpc`, channels `voltage0_i voltage0_q`
+(15.36 MSPS). For items 2 to 5, RX1 was put in the ADRV9002's SSI fixed test pattern through the
+driver's debugfs:
+
+```sh
+echo TESTMODE_DATA_FIXED_PATTERN > rx0_ssi_test_mode_data
+echo 23100 > rx0_ssi_test_mode_fixed_pattern
+echo 1 > rx0_ssi_test_mode_configure
+```
+
+`TESTMODE_DATA_NORMAL` was restored afterwards.
+
+- [x] `iio_info` through `daqiri:<board>,data=tcp` and `ip:<board>`: the same 28 devices and 157
+      channels. Extra through `daqiri:`: the five `daqiri,*` context attributes, `uri`, the
+      backend description, and the 24 `daqiri_*` buffer attributes of each input buffer.
+- [x] `iio_rwdev -b 4096 -s 16384 axi-adrv9002-rx-lpc voltage0_i voltage0_q` through both URIs:
+      65536 bytes each, byte-identical. Every sample is (23100, 23100).
+- [x] `iio_daqiri_bench -d axi-adrv9002-rx-lpc -c voltage0_i,voltage0_q -s 65536 -T 5`: completes
+      at 0.2751 Gb/s through `daqiri:<board>,data=tcp` (2624 blocks, `daqiri_blocks_failed 0`) and
+      at 0.2744 Gb/s through `ip:<board>` (2618 blocks): the same through both URIs, below
+      the converter's 0.49 Gb/s.
+- [x] Blocks: since the server refuses `BINARY`, `create_block` is `-ENOSYS` and the library
+      allocates the blocks itself. Every capture and benchmark created and dequeued blocks
+      without an error.
+- [x] `data=auto`: both URIs streamed over TCP, with `data_path tcp` and `daqiri_data_path`
+      `tcp` (0.2788 and 0.2780 Gb/s). The URIs were `daqiri:<board>` and
+      `daqiri:<board>,yaml=<socket-engine YAML>`.
