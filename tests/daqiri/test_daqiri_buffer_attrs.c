@@ -406,6 +406,7 @@ TEST_FUNCTION(indices_after_xml)
 TEST_FUNCTION(remote_write)
 {
 	const struct iio_device *dev_d, *dev_i;
+	const struct iio_buffer *buf_d, *buf_i;
 	const struct iio_attr *attr_d, *attr_i;
 	char val[256], orig[256];
 	ssize_t ret;
@@ -417,10 +418,10 @@ TEST_FUNCTION(remote_write)
 
 	dev_d = iio_context_find_device(ctx_d, "cf-ad9361-lpc");
 	dev_i = iio_context_find_device(ctx_i, "cf-ad9361-lpc");
-	attr_d = dev_d ? iio_buffer_find_attr(iio_device_get_buffer(dev_d, 0), "length_align_bytes")
-		       : NULL;
-	attr_i = dev_i ? iio_buffer_find_attr(iio_device_get_buffer(dev_i, 0), "length_align_bytes")
-		       : NULL;
+	buf_d = dev_d ? iio_device_get_buffer(dev_d, 0) : NULL;
+	buf_i = dev_i ? iio_device_get_buffer(dev_i, 0) : NULL;
+	attr_d = buf_d ? iio_buffer_find_attr(buf_d, "length_align_bytes") : NULL;
+	attr_i = buf_i ? iio_buffer_find_attr(buf_i, "length_align_bytes") : NULL;
 	TEST_ASSERT_PTR_NOT_NULL(attr_d, "cf-ad9361-lpc buffer0 length_align_bytes via daqiri:");
 	TEST_ASSERT_PTR_NOT_NULL(attr_i, "cf-ad9361-lpc buffer0 length_align_bytes via ip:");
 	if (!attr_d || !attr_i)
