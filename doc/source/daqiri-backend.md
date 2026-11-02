@@ -277,7 +277,9 @@ library's fallback, without native blocks.
 ## Counters
 
 Every input buffer of a `daqiri:` context has these buffer attributes (read
-them with `iio_buffer_find_attr()`, or the `iio_attr` utility). A buffer that
+them with `iio_buffer_find_attr()`, or the `iio_attr` utility). They are
+listed after the buffer's own attributes, which keep the server's order and
+indices (`iio_buffer_get_attr()`, `iio_info`). A buffer that
 streams over TCP, or one not open, answers `daqiri_data_path` and the
 defaults of the others (zeros, and the options it would start with).
 Counters count from the opening of the buffer, and datagrams that arrived
