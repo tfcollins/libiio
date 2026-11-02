@@ -423,9 +423,50 @@ static struct iio_context_pdata *dq_dev_pdata(const struct iio_device *dev)
 }
 
 /*
+ * iio_buffer_add_attr() without the sort: iio_add_attr() (attr.c) sorts the
+ * list by name after every add, and iiod-client sends a buffer attribute's
+ * position in that list as its index on the wire, which must be the
+ * server's. Appended, the attributes that the server serves keep their
+ * positions, and iio_buffer_find_attr(), a linear search, finds the
+ * appended ones all the same. The entry is the one iio_add_attr() makes,
+ * its filename the name itself, so that free_buffer() frees it.
+ */
+static int dq_buffer_append_attr(struct iio_buffer *buf, const char *name)
+{
+	struct iio_attr_list *list = &buf->attrlist;
+	struct iio_attr *attrs;
+	char *dup;
+
+	dup = iio_strdup(name);
+	if (!dup)
+		return -ENOMEM;
+
+	attrs = realloc(list->attrs, (list->num + 1) * sizeof(*attrs));
+	if (!attrs) {
+		free(dup);
+		return -ENOMEM;
+	}
+
+	attrs[list->num] = (struct iio_attr){
+		.iio.buf = buf,
+		.type = IIO_ATTR_TYPE_BUFFER,
+		.name = dup,
+		.filename = dup,
+	};
+	list->attrs = attrs;
+	list->num++;
+
+	return 0;
+}
+
+/*
  * The daqiri_* attributes of every input buffer, served here rather than by
  * iiod: the data path the buffer uses (or would), and the counters of its UDP
- * stream.
+ * stream. They go after the server's own attributes, whose positions in the
+ * list are their indices on the wire (dq_buffer_append_attr()): a sorted
+ * add would put every daqiri_* name before data_available and the rest. No
+ * buffer attribute may be added with iio_buffer_add_attr() after them,
+ * since it sorts the whole list again.
  */
 static int dq_add_buffer_attrs(struct iio_context *ctx)
 {
@@ -443,7 +484,7 @@ static int dq_add_buffer_attrs(struct iio_context *ctx)
 				continue;
 
 			for (k = 0; k < dq_nb_attrs; k++) {
-				ret = iio_buffer_add_attr(buf, dq_attr_names[k]);
+				ret = dq_buffer_append_attr(buf, dq_attr_names[k]);
 				if (ret)
 					return ret;
 			}
