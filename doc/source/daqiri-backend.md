@@ -279,7 +279,9 @@ library's fallback, without native blocks.
 Every input buffer of a `daqiri:` context has these buffer attributes (read
 them with `iio_buffer_find_attr()`, or the `iio_attr` utility). They are
 listed after the buffer's own attributes, which keep the server's order and
-indices (`iio_buffer_get_attr()`, `iio_info`). A buffer that
+indices (`iio_buffer_get_attr()`, `iio_info`); this is why a `daqiri:`
+context cannot be served through `iiod -u` (see
+[Limitations](#daqiri-limitations)). A buffer that
 streams over TCP, or one not open, answers `daqiri_data_path` and the
 defaults of the others (zeros, and the options it would start with).
 Counters count from the opening of the buffer, and datagrams that arrived
@@ -375,6 +377,8 @@ built from this libiio does (an older `iiod` drops the connection on a command
 it does not know); the backend never sends it there, since nothing is
 advertised.
 
+(daqiri-limitations)=
+
 ## Limitations
 
 - **One YAML per process.** DAQIRI initialises once; a second `daqiri:`
@@ -395,6 +399,12 @@ advertised.
 - **The server may refuse a channel mask** it cannot stream (`-ENOTSUP` at
   setup: TCP with `data=auto`, a failed open with `data=udp`).
 - **Late datagrams are dropped** (and counted), not put back in order.
+- **No `iiod -u daqiri:...`.** Serving a `daqiri:` context through `iiod`
+  (a proxy) is not supported. Its clients number the buffer attributes
+  differently from it: they sort the names they parse, while the context
+  lists the server's attributes first and the `daqiri_*` ones after them. A
+  buffer attribute read or written through such a proxy reaches the wrong
+  attribute, without an error.
 - Linux only.
 
 ## Security
