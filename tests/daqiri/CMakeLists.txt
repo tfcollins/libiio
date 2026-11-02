@@ -37,6 +37,32 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                    "IIOD_EMU=$<TARGET_FILE:iiod-emu>" RESOURCE_LOCK
                    iiod-emu-30431)
 
+    # The buffer attributes of a daqiri: context against ip:'s: the server's
+    # read and write the same through both, the daqiri_* ones are found by
+    # name and served locally.
+    add_executable(test_daqiri_buffer_attrs test_daqiri_buffer_attrs.c)
+    target_link_libraries(test_daqiri_buffer_attrs PRIVATE iio)
+    target_include_directories(test_daqiri_buffer_attrs
+                               PRIVATE ${CMAKE_SOURCE_DIR}/tests/api)
+    target_compile_definitions(test_daqiri_buffer_attrs PRIVATE TESTS_DEBUG)
+    add_dependencies(test_daqiri_buffer_attrs iio-daqiri iiod-emu)
+
+    add_test(
+        NAME daqiri_buffer_attrs
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh ${XMLS}/fmcomms2.xml
+                $<TARGET_FILE:test_daqiri_buffer_attrs>)
+    # IIO_DAQIRI_YAML is cleared: the test needs no YAML.
+    set_tests_properties(
+        daqiri_buffer_attrs
+        PROPERTIES LABELS
+                   daqiri-loopback
+                   ENVIRONMENT
+                   "IIOD_EMU=$<TARGET_FILE:iiod-emu>;IIO_DAQIRI_YAML="
+                   RESOURCE_LOCK
+                   iiod-emu-30431
+                   TIMEOUT
+                   60)
+
     # iiod-emu fills a block from its .bin with at most one wrap, so a .bin
     # shorter than a block leaves the end of the block unwritten. Serve a copy
     # of fmcomms2.xml next to the stock cf-ad9361-lpc_buf0.bin (2019 bytes)
