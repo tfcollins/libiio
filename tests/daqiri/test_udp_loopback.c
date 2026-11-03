@@ -22,7 +22,7 @@
  * Every case runs against an emulator of its own, which with_emu.sh starts
  * with the case's flags and --udp-json <oracle.json>. Without --case this
  * program is the driver that runs every case that way, or the cases named
- * (burst_sized only when named; it exits 77, skipped, where the kernel does
+ * (burst_sized only when named; it exits 77, skipped, where the host does
  * not grant the receive buffer it needs):
  *   test_udp_loopback <with_emu.sh> <xml> <sample.bin> <oracle.json> [<case>...]
  *   test_udp_loopback --case <name> <sample.bin> <oracle.json>
@@ -52,7 +52,12 @@
  * instead (see rcvbuf_default below); they never enable the buffer.
  */
 
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1 /* SO_RCVBUFFORCE */
+#endif
+
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <errno.h>
 #include <iio/iio.h>
 #include <inttypes.h>
@@ -1214,9 +1219,10 @@ TEST_FUNCTION(burst_gap)
 
 /*
  * The receive buffer of the engine's socket (daqiri_rx_socket_buffer), which
- * the backend sizes when it opens the buffer. The kernel doubles what it is
- * asked for, after capping it at net.core.rmem_max unless the process may
- * force it (CAP_NET_ADMIN: SO_RCVBUFFORCE), and never goes below
+ * the backend sizes when it opens the buffer: SO_RCVBUF first, which the
+ * kernel caps at net.core.rmem_max, then SO_RCVBUFFORCE when that came out
+ * short and the process may force it (CAP_NET_ADMIN in the initial user
+ * namespace). The kernel reports twice what it granted, and never less than
  * SOCK_MIN_RCVBUF. Every case runs in a process, and so on an engine socket,
  * of its own: what an earlier open asked for does not carry over.
  */
@@ -1226,6 +1232,8 @@ TEST_FUNCTION(burst_gap)
 
 /* The default for socket-udp-loopback-1472.yaml: 256 x 2048 is below 4 MiB */
 #define DEFAULT_RCVBUF (4LL << 20)
+
+#define INT_MAX_LL 0x7fffffffLL
 
 /* A whole number from /proc/sys, or -1 */
 static long long proc_ll(const char *path)
@@ -1242,35 +1250,78 @@ static long long proc_ll(const char *path)
 	return val;
 }
 
-/* The process may force a receive buffer past net.core.rmem_max */
-static bool cap_net_admin(void)
+/* Whether this process may force a receive buffer past net.core.rmem_max:
+ * tried on a socket of its own, since CAP_NET_ADMIN only counts in the
+ * initial user namespace */
+static bool can_force(void)
 {
-	unsigned long long caps = 0;
-	char line[256];
-	bool found = false;
-	FILE *f = fopen("/proc/self/status", "r");
+	int fd = socket(AF_INET, SOCK_DGRAM, 0), val = 65536;
+	bool ok;
 
-	if (!f)
+	if (fd < 0)
 		return false;
-	while (!found && fgets(line, sizeof(line), f))
-		found = sscanf(line, "CapEff: %llx", &caps) == 1;
-	fclose(f);
+	ok = !setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &val, sizeof(val));
+	close(fd);
 
-	return found && (caps >> 12 & 1); /* CAP_NET_ADMIN */
+	return ok;
 }
 
-/* What the kernel makes of <asked> bytes */
+/* What the kernel reports for <asked> bytes, as the backend asks for them */
 static long long rcvbuf_effective(long long asked)
 {
 	long long rmem_max = proc_ll("/proc/sys/net/core/rmem_max");
 	long long val = asked;
 
-	if (!cap_net_admin() && rmem_max >= 0 && val > rmem_max)
+	if (rmem_max >= 0 && val > rmem_max && !can_force())
 		val = rmem_max;
-	if (val > 0x7fffffffLL / 2)
-		val = 0x7fffffffLL / 2;
+	if (val > INT_MAX_LL / 2)
+		val = INT_MAX_LL / 2;
 
 	return val * 2 > KERNEL_MIN_RCVBUF ? val * 2 : KERNEL_MIN_RCVBUF;
+}
+
+/* The receive buffer of this process's UDP socket bound to
+ * 127.0.0.1:LOCAL_PORT and connected to 127.0.0.1:<peer>, read by the test
+ * itself; -1 when there is not exactly one */
+static long long engine_socket_rcvbuf(unsigned int peer)
+{
+	struct sockaddr_in sin;
+	struct dirent *de;
+	long long ret = -1;
+	unsigned int nb = 0;
+	socklen_t len;
+	int fd, val;
+	DIR *d;
+
+	d = opendir("/proc/self/fd");
+	if (!d)
+		return -1;
+
+	while ((de = readdir(d))) {
+		fd = atoi(de->d_name);
+		if (de->d_name[0] == '.' || fd == dirfd(d))
+			continue;
+
+		len = sizeof(val);
+		if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &val, &len) || val != SOCK_DGRAM)
+			continue;
+		len = sizeof(sin);
+		if (getsockname(fd, (struct sockaddr *)&sin, &len) || sin.sin_family != AF_INET ||
+				ntohs(sin.sin_port) != LOCAL_PORT ||
+				sin.sin_addr.s_addr != htonl(INADDR_LOOPBACK))
+			continue;
+		len = sizeof(sin);
+		if (getpeername(fd, (struct sockaddr *)&sin, &len) || ntohs(sin.sin_port) != peer)
+			continue;
+
+		len = sizeof(val);
+		if (!getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &val, &len))
+			ret = val;
+		nb++;
+	}
+	closedir(d);
+
+	return nb == 1 ? ret : -1;
 }
 
 /* Open the buffer with <extra>, read daqiri_rx_socket_buffer; -1, failing
@@ -1288,12 +1339,34 @@ static long long rcvbuf_open(const char *extra)
 			extra[0] ? extra + 1 : "no rcvbuf=", attr_str("daqiri_rx_socket_buffer"),
 			proc_ll("/proc/sys/net/core/rmem_max"),
 			proc_ll("/proc/sys/net/core/rmem_default"),
-			cap_net_admin() ? ", CAP_NET_ADMIN" : "");
+			can_force() ? ", may force" : "");
 
 	val = attr_ll("daqiri_rx_socket_buffer");
 	TEST_ASSERT(val >= 0, "daqiri_rx_socket_buffer read as a number");
 
 	return val;
+}
+
+/* Start collecting what the next context logs */
+static bool log_start(void)
+{
+	lb_log = tmpfile();
+	TEST_ASSERT_PTR_NOT_NULL(lb_log, "log file");
+
+	return lb_log != NULL;
+}
+
+/* What it logged, into <text> */
+static void log_end(char *text, size_t len)
+{
+	size_t n;
+
+	rewind(lb_log);
+	n = fread(text, 1, len - 1, lb_log);
+	text[n] = '\0';
+	fclose(lb_log);
+	lb_log = NULL;
+	printf("  logged: %s", text[0] ? text : "nothing\n");
 }
 
 /* Without rcvbuf=: num_bufs * buf_size, at least 4 MiB */
@@ -1303,6 +1376,7 @@ TEST_FUNCTION(rcvbuf_default)
 
 	TEST_ASSERT(got >= KERNEL_MIN_RCVBUF, "at least the kernel's minimum");
 	CHECK_EQ(got, rcvbuf_effective(DEFAULT_RCVBUF), "4 MiB, as the kernel grants it");
+	CHECK_EQ(engine_socket_rcvbuf(SENDER_PORT), got, "the engine's socket has it");
 }
 
 /* Without rcvbuf=, a YAML whose packet buffers take more than 4 MiB:
@@ -1322,13 +1396,23 @@ TEST_FUNCTION(rcvbuf_from_yaml)
 			"num_bufs * buf_size, as the kernel grants it");
 }
 
-/* rcvbuf=0: the socket keeps the kernel's default */
+/* rcvbuf=0: nothing asked, nothing looked up, nothing logged; the socket
+ * keeps the kernel's default and the attribute reads 0 */
 TEST_FUNCTION(rcvbuf_zero)
 {
-	long long got = rcvbuf_open(",rcvbuf=0");
+	char text[4096] = "";
+	long long got;
 
-	TEST_ASSERT(got >= KERNEL_MIN_RCVBUF, "at least the kernel's minimum");
-	CHECK_EQ(got, proc_ll("/proc/sys/net/core/rmem_default"), "net.core.rmem_default");
+	if (!log_start())
+		return;
+	got = rcvbuf_open(",rcvbuf=0");
+	log_end(text, sizeof(text));
+
+	CHECK_EQ(got, 0, "daqiri_rx_socket_buffer 0: not sized");
+	CHECK_EQ(engine_socket_rcvbuf(SENDER_PORT), proc_ll("/proc/sys/net/core/rmem_default"),
+			"the engine's socket keeps net.core.rmem_default");
+	TEST_ASSERT(strstr(text, "WARNING: ") == NULL, "no warning");
+	TEST_ASSERT(strstr(text, "ERROR: ") == NULL, "no error");
 }
 
 /* rcvbuf=N: N, as the kernel grants it */
@@ -1342,32 +1426,57 @@ TEST_FUNCTION(rcvbuf_set)
 
 /* More than the kernel grants: a warning that names net.core.rmem_max and
  * rcvbuf=, and the buffer opens all the same. The kernel never grants
- * INT_MAX (it doubles at most INT_MAX / 2). */
+ * INT_MAX (it grants INT_MAX / 2 at most). */
 TEST_FUNCTION(rcvbuf_short)
 {
 	char text[4096] = "";
 	long long got;
-	size_t n;
 
-	lb_log = tmpfile();
-	TEST_ASSERT_PTR_NOT_NULL(lb_log, "log file");
-	if (!lb_log)
+	if (!log_start())
 		return;
-
 	got = rcvbuf_open(",rcvbuf=2147483647");
-	CHECK_EQ(got, rcvbuf_effective(2147483647LL), "as the kernel grants it");
+	log_end(text, sizeof(text));
 
-	rewind(lb_log);
-	n = fread(text, 1, sizeof(text) - 1, lb_log);
-	text[n] = '\0';
-	fclose(lb_log);
-	lb_log = NULL;
-	printf("  logged: %s", text[0] ? text : "nothing\n");
-
+	CHECK_EQ(got, rcvbuf_effective(INT_MAX_LL), "as the kernel grants it");
 	TEST_ASSERT(strstr(text, "WARNING: ") != NULL, "a warning");
 	TEST_ASSERT(strstr(text, "ERROR: ") == NULL, "no error");
 	TEST_ASSERT(strstr(text, "net.core.rmem_max") != NULL, "naming net.core.rmem_max");
 	TEST_ASSERT(strstr(text, "rcvbuf=") != NULL, "and the rcvbuf= key");
+}
+
+/*
+ * socket-udp-loopback-shared.yaml: interfaces a and b both on local_addr
+ * 127.0.0.1:25101 (a connected to :25102, b to :25103), so DAQIRI answers
+ * the same connection, a's, for both. A buffer on b must not size a's
+ * socket: the backend says it cannot tell them apart, does not blame
+ * net.core.rmem_max, and reads back b's own socket, untouched.
+ */
+#define SHARED_PEER_PORT 25103
+
+TEST_FUNCTION(rcvbuf_shared_port)
+{
+	static char path[4096];
+	const char *slash = strrchr(yaml, '/');
+	long long rmem_default = proc_ll("/proc/sys/net/core/rmem_default");
+	char text[4096] = "";
+	long long got;
+
+	snprintf(path, sizeof(path), "%.*ssocket-udp-loopback-shared.yaml",
+			slash ? (int)(slash - yaml + 1) : 0, yaml);
+	yaml = path;
+
+	if (!log_start())
+		return;
+	got = rcvbuf_open(",iface=b");
+	log_end(text, sizeof(text));
+
+	CHECK_EQ(got, rmem_default, "b's socket read back: the kernel's default");
+	CHECK_EQ(engine_socket_rcvbuf(SHARED_PEER_PORT), rmem_default, "b's socket untouched");
+	CHECK_EQ(engine_socket_rcvbuf(SENDER_PORT), rmem_default, "a's socket untouched");
+	TEST_ASSERT(strstr(text, "WARNING: ") != NULL, "a warning");
+	TEST_ASSERT(strstr(text, "ERROR: ") == NULL, "no error");
+	TEST_ASSERT(strstr(text, "local_addr") != NULL, "naming the shared local_addr");
+	TEST_ASSERT(strstr(text, "net.core.rmem_max") == NULL, "not blaming net.core.rmem_max");
 }
 
 /*
@@ -1378,24 +1487,31 @@ TEST_FUNCTION(rcvbuf_short)
  * socket's receive buffer. BURST_DGRAMS datagrams of 1472 bytes go to the
  * engine's socket from its remote_addr as fast as the test can send them;
  * the kernel counts what found the receive buffer full in the drops column
- * of the socket's /proc/net/udp line. This does not depend on how the
- * threads run: the engine never holds more than 256. It stays below the
- * default net.core.netdev_max_backlog (1000), whose drops /proc/net/udp
- * would not show.
+ * of the socket's /proc/net/udp line.
+ *
+ * How many the engine's thread takes during the burst, and when the kernel
+ * processes the loopback backlog, depends on scheduling. The checks hold
+ * whatever it is: a small buffer loses at least BURST_DGRAMS - 256 - what it
+ * holds, and burst_sized runs only where the buffer holds the whole burst,
+ * even with nothing taken by the engine. The burst stays below the default
+ * net.core.netdev_max_backlog (1000), whose drops /proc/net/udp would not
+ * show; the test prints those of /proc/net/softnet_stat besides.
  */
 #define BURST_DGRAMS 768
-#define ENGINE_BUFS 256
 /* What one 1472-byte datagram takes of the receive buffer on loopback, at
  * most (its skb's truesize: about 2.3 KiB) */
 #define DGRAM_TRUESIZE_MAX 4096
+/* burst_small: 128 KiB as reported, some 55 datagrams */
+#define SMALL_RCVBUF 65536
 
-/* The drops of the socket bound to 127.0.0.1:LOCAL_PORT, -1 if none */
+/* The drops of the socket bound to 127.0.0.1:LOCAL_PORT and connected to
+ * 127.0.0.1:SENDER_PORT, -1 if none */
 static long long socket_drops(void)
 {
-	char line[512], local[64];
+	char line[512], local[64], rem[64];
 	unsigned long long drops;
 	long long ret = -1;
-	unsigned int port;
+	unsigned int port, rport;
 	FILE *f = fopen("/proc/net/udp", "r");
 
 	if (!f)
@@ -1404,14 +1520,34 @@ static long long socket_drops(void)
 	while (fgets(line, sizeof(line), f)) {
 		/* sl local rem st tx:rx tr:when retrnsmt uid timeout inode ref
 		 * pointer drops */
-		if (sscanf(line, " %*u: %63s %*s %*x %*s %*s %*s %*u %*u %*u %*u %*s %llu", local,
-				    &drops) != 2)
+		if (sscanf(line, " %*u: %63s %63s %*x %*s %*s %*s %*u %*u %*u %*u %*s %llu", local,
+				    rem, &drops) != 3)
 			continue;
-		if (sscanf(local, "0100007F:%x", &port) == 1 && port == LOCAL_PORT) {
+		if (sscanf(local, "0100007F:%x", &port) == 1 && port == LOCAL_PORT &&
+				sscanf(rem, "0100007F:%x", &rport) == 1 && rport == SENDER_PORT) {
 			ret = (long long)drops;
 			break;
 		}
 	}
+	fclose(f);
+
+	return ret;
+}
+
+/* Packets the kernel dropped from its per-CPU backlogs, all CPUs (the second
+ * column of /proc/net/softnet_stat, hex), or -1 */
+static long long backlog_drops(void)
+{
+	unsigned int processed, dropped;
+	long long ret = 0;
+	char line[512];
+	FILE *f = fopen("/proc/net/softnet_stat", "r");
+
+	if (!f)
+		return -1;
+	while (fgets(line, sizeof(line), f))
+		if (sscanf(line, "%x %x", &processed, &dropped) == 2)
+			ret += dropped;
 	fclose(f);
 
 	return ret;
@@ -1431,7 +1567,7 @@ static long long burst(void)
 		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
 	};
 	static uint8_t dgram[IIOD_UDP_STREAM_HDR_LEN + PAYLOAD];
-	long long before, after, last;
+	long long before, after, last, bl_before, bl_after;
 	unsigned int i, sent = 0;
 	struct timespec t0;
 	int fd, one = 1;
@@ -1440,6 +1576,7 @@ static long long burst(void)
 	TEST_ASSERT(before >= 0, "the engine's socket in /proc/net/udp");
 	if (before < 0)
 		return -1;
+	bl_before = backlog_drops();
 
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (fd < 0 || setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) ||
@@ -1465,43 +1602,55 @@ static long long burst(void)
 		sleep_ms(100);
 		after = socket_drops();
 	} while (after != last && ms_since(&t0) < WAIT_TIMEOUT_MS);
+	bl_after = backlog_drops();
 
-	printf("  %u datagrams sent into a stalled consumer: %lld dropped by the socket\n", sent,
-			after - before);
+	printf("  %u datagrams sent into a stalled consumer: %lld dropped by the socket, %lld "
+	       "from the backlogs (all CPUs)\n",
+			sent, after - before,
+			bl_before >= 0 && bl_after >= 0 ? bl_after - bl_before : -1LL);
 
 	return after - before;
 }
 
-/* rcvbuf=0: the kernel's default buffer overflows */
-TEST_FUNCTION(burst_kernel_default)
+/* A small buffer, whatever the host's net.core.rmem_default: rcvbuf=65536
+ * loses datagrams of the burst */
+TEST_FUNCTION(burst_small)
 {
-	long long drops;
+	long long got = rcvbuf_open(",rcvbuf=65536"), drops;
 
-	if (rcvbuf_open(",rcvbuf=0") < 0)
+	if (got < 0)
 		return;
+	CHECK_EQ(got, rcvbuf_effective(SMALL_RCVBUF), "65536 bytes, as the kernel grants it");
 
 	drops = burst();
-	TEST_ASSERT(drops > 0, "the default receive buffer loses datagrams of the burst");
+	TEST_ASSERT(drops > 0, "the small receive buffer loses datagrams of the burst");
 }
 
-/* Without rcvbuf=: nothing lost, where the kernel grants the space. Exits 77
- * (skipped) where net.core.rmem_max does not let it. */
+/* Without rcvbuf=: nothing lost. Whether the host grants room for the whole
+ * burst is decided from net.core.rmem_max and whether the process may force
+ * the size, never from the attribute under test; where it does not, the case
+ * exits 77 (skipped). */
 static int burst_sized_skip;
 
 TEST_FUNCTION(burst_sized)
 {
-	const long long need = (long long)(BURST_DGRAMS - ENGINE_BUFS) * DGRAM_TRUESIZE_MAX;
-	long long got = rcvbuf_open(""), drops;
+	const long long need = (long long)BURST_DGRAMS * DGRAM_TRUESIZE_MAX;
+	long long want = rcvbuf_effective(DEFAULT_RCVBUF), got, drops;
 
-	if (got < 0)
-		return;
-	if (got < need) {
-		printf("  SKIP: daqiri_rx_socket_buffer is %lld bytes, %lld are needed: raise "
-		       "net.core.rmem_max to %lld or more\n",
-				got, need, need / 2);
+	if (want < need) {
+		printf("  SKIP: this host grants %lld bytes for the 4 MiB asked (net.core.rmem_max "
+		       "%lld), %lld are needed: raise net.core.rmem_max to %lld or more\n",
+				want, proc_ll("/proc/sys/net/core/rmem_max"), need, need / 2);
 		burst_sized_skip = 1;
 		return;
 	}
+
+	got = rcvbuf_open("");
+	if (got < 0)
+		return;
+	CHECK_EQ(got, want, "4 MiB, as the kernel grants it, before the burst");
+	if (got != want)
+		return;
 
 	drops = burst();
 	CHECK_EQ(drops, 0, "the sized receive buffer loses nothing of the burst");
@@ -1537,7 +1686,8 @@ static const struct lb_case cases[] = {
 	{ "rcvbuf_zero", test_rcvbuf_zero, { NULL } },
 	{ "rcvbuf_set", test_rcvbuf_set, { NULL } },
 	{ "rcvbuf_short", test_rcvbuf_short, { NULL } },
-	{ "burst_kernel_default", test_burst_kernel_default, { NULL } },
+	{ "rcvbuf_shared_port", test_rcvbuf_shared_port, { "--udp-from", "127.0.0.1:25103" } },
+	{ "burst_small", test_burst_small, { NULL } },
 	{ "burst_sized", test_burst_sized, { NULL }, true },
 };
 

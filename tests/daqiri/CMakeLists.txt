@@ -274,9 +274,9 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                 ${UDP_FIXTURE}/cf-ad9361-lpc_buf0.bin ${UDP_LOOPBACK_ORACLE})
         # A burst into a buffer that is open but not enabled, with the
         # receive buffer the backend asks for by default: nothing lost. Where
-        # net.core.rmem_max does not grant enough, it exits 77, which ctest
-        # reports as skipped. (The burst_kernel_default case above shows the
-        # same burst losing datagrams with rcvbuf=0.)
+        # net.core.rmem_max does not grant room for the whole burst, it exits
+        # 77, which ctest reports as skipped. (The burst_small case above
+        # shows the same burst losing datagrams with rcvbuf=65536.)
         add_test(
             NAME daqiri_udp_rcvbuf_burst
             COMMAND

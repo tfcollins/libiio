@@ -77,7 +77,7 @@ Unknown keys, and values that do not parse, make context creation fail with
 | `lossy` | `0`, `1` | `0` | Lost datagrams in UDP sample mode: `0` fails the block (`-EIO`), `1` zero-fills exactly the lost payloads and goes on (up to 1024 lost datagrams; host overruns are flagged, not filled; see [Block errors and losses](#daqiri-block-errors)). Readable and writable at run time as the `daqiri_lossy` buffer attribute. |
 | `data_port` | port | the management port | TCP port of each buffer's own `iiod` connection, on both data paths. |
 | `poll` | microseconds | `200` | Idle wait of the receive thread when the queue is empty, see below. |
-| `rcvbuf` | bytes, `0` to `2147483647` | from the YAML, see [The socket's receive buffer](#daqiri-rcvbuf) | Receive buffer to ask for the socket of a socket engine queue. `0` asks for nothing: the socket keeps the kernel's default. Read back as the `daqiri_rx_socket_buffer` buffer attribute. |
+| `rcvbuf` | bytes, `0` to `2147483647` | from the YAML, see [The socket's receive buffer](#daqiri-rcvbuf) | Receive buffer to ask for the socket of a socket engine queue. `0` asks for nothing: the socket keeps the kernel's default. Read back as the `daqiri_rx_socket_buffer` buffer attribute. Parsed as C does (`strtoul()` base 0): `0x` is hex, and a leading `0` makes the rest octal (`rcvbuf=010` is 8 bytes). |
 
 `IIO_DAQIRI_YAML` is the fallback for `yaml`; a `yaml=` in the URI wins.
 
@@ -278,25 +278,36 @@ datagrams from its socket once its queue's packet buffers are all in use, and
 the kernel then holds what arrives in the socket's receive buffer, up to its
 size, and drops the rest. Those drops happen before the backend sees the
 datagrams: they show as `daqiri_rx_lost_packets` (and in the `RcvbufErrors`
-of `/proc/net/snmp`). DAQIRI itself sets no socket options, so the socket
-starts with `net.core.rmem_default` bytes (212992 on most hosts, some 16
-datagrams of 9000 bytes), and the backend sizes it when a UDP buffer opens,
-before its first enable:
+of `/proc/net/snmp`). DAQIRI sets `SO_REUSEADDR` on the socket but not its
+size, so the socket starts with `net.core.rmem_default` bytes (212992 on most
+hosts, some 16 datagrams of 9000 bytes), and the backend sizes it when a UDP
+buffer opens, before its first enable:
 
 - Without `rcvbuf=`, it asks for the bytes of the queue's packet buffers,
   `num_bufs * buf_size` of its memory region, at least 4 MiB and at most
-  64 MiB. With `rcvbuf=<bytes>` it asks for that; `rcvbuf=0` asks for nothing.
+  64 MiB. With `rcvbuf=<bytes>` it asks for that.
+- `rcvbuf=0` asks for nothing and looks nothing up: the socket keeps the
+  kernel's default, nothing is logged, and `daqiri_rx_socket_buffer` reads 0.
 - It asks through DAQIRI: `socket_get_server_conn_id()` for the YAML's
-  `local_addr`, then `socket_setsockopt()`, with `SO_RCVBUFFORCE` when the
-  process has `CAP_NET_ADMIN`, otherwise (or when that fails) with
-  `SO_RCVBUF`, which the kernel caps at `net.core.rmem_max`.
+  `local_addr`, then `socket_get_port_queue()` to check that the connection
+  is this queue's (DAQIRI keys its server sockets by address alone), then
+  `socket_setsockopt()` with `SO_RCVBUF`, which the kernel caps at
+  `net.core.rmem_max`. When the kernel granted less than that and the process
+  may force it (`CAP_NET_ADMIN` in the initial user namespace, found by trying
+  on a socket of its own), it asks again with `SO_RCVBUFFORCE`.
 - It reads back what the kernel made of it into `daqiri_rx_socket_buffer`. The
   kernel reports twice what it granted (the other half is its bookkeeping), so
   asking for 4 MiB shows 8388608 when `net.core.rmem_max` allows 4 MiB.
-- When that is less than what was asked for, it logs a warning (the buffer
-  still opens) that names `net.core.rmem_max` and `rcvbuf=`. So does a failure
-  to set or read the size; DAQIRI also logs a failed `setsockopt()` as an
-  error.
+  DAQIRI has no `getsockopt()`: the backend finds the socket among the
+  process's file descriptors (the one IPv4 UDP socket bound to `local_addr`,
+  and connected to `remote_addr` when the YAML has one) and reads it through
+  a duplicate.
+- When the kernel granted less than was asked for (it reports less than
+  twice that), the backend logs a warning (the buffer still opens) that names
+  `net.core.rmem_max` and `rcvbuf=`. A failure to set or read the size is a
+  warning too. With two interfaces of the YAML on the same `local_addr`, DAQIRI
+  may answer the other interface's connection; the backend then leaves the
+  size alone and its warning says so.
 
 On the host, let unprivileged processes have the size: set
 `net.core.rmem_max` to at least what the backend asks for, for example
@@ -354,7 +365,7 @@ before the stream was started are dropped, not counted.
 | `daqiri_lossy` | The `lossy` setting. Read/write. |
 | `daqiri_mem_domain` | `host`, `pinned` or `device`. |
 | `daqiri_engine_kind` | DAQIRI engine in use: `socket`, `dpdk` or `ibverbs`; `none` over TCP. |
-| `daqiri_rx_socket_buffer` | Socket engine: the receive buffer of the queue's socket in bytes, as the kernel reported it (twice what it granted) when the buffer opened, see [The socket's receive buffer](#daqiri-rcvbuf). A size, not a counter. `0` on raw engines, over TCP, or when it could not be read. |
+| `daqiri_rx_socket_buffer` | Socket engine: the receive buffer of the queue's socket in bytes, as the kernel reported it (twice what it granted) when the buffer opened, see [The socket's receive buffer](#daqiri-rcvbuf). A size, not a counter. `0` with `rcvbuf=0`, on raw engines, over TCP, or when it could not be read. |
 
 The context also has the static attributes `uri`, `ip,ip-addr`, `daqiri,yaml`,
 `daqiri,data`, `daqiri,mem`, `daqiri,engine` and `daqiri,version`.

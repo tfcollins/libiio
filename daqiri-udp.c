@@ -952,35 +952,53 @@ static int dq_udp_request(struct iio_buffer_pdata *buf, int port, struct iiod_ud
 	return 0;
 }
 
-/* CAP_NET_ADMIN in the effective set: SO_RCVBUFFORCE may go past
- * net.core.rmem_max */
-static bool dq_cap_net_admin(void)
+/* Whether this process may force a receive buffer past net.core.rmem_max
+ * (SO_RCVBUFFORCE): tried on a socket of its own, since CAP_NET_ADMIN counts
+ * only in the initial user namespace, and DAQIRI logs a failed setsockopt()
+ * as an error */
+static bool dq_can_force_rcvbuf(void)
 {
-	unsigned long long caps = 0;
-	bool found = false;
-	char line[256];
-	FILE *f;
+	int fd, val = 4096;
+	bool ok;
 
-	f = fopen("/proc/self/status", "re");
-	if (!f)
+	fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	if (fd < 0)
 		return false;
-	while (!found && fgets(line, sizeof(line), f))
-		found = sscanf(line, "CapEff: %llx", &caps) == 1;
-	fclose(f);
+	ok = !setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &val, sizeof(val));
+	close(fd);
 
-	return found && ((caps >> 12) & 1); /* CAP_NET_ADMIN */
+	return ok;
+}
+
+/* The receive buffer of the queue's socket as the kernel reports it, into
+ * *got; logs a failure */
+static int dq_udp_read_rcvbuf(struct dq_udp_buffer *v, int *got)
+{
+	char err[256];
+	int ret;
+
+	ret = dq_rxq_get_rcvbuf(v->q, got);
+	if (ret) {
+		iio_strerror(-ret, err, sizeof(err));
+		dev_warn(v->buf->dev, "Unable to read the UDP receive buffer of queue %d: %s\n",
+				v->buf->ctx->opts.rxq, err);
+	}
+
+	return ret;
 }
 
 /*
  * Socket engine: size the receive buffer of the queue's socket, which DAQIRI
  * leaves at net.core.rmem_default (some 16 jumbo datagrams), before the first
  * enable, and keep what the kernel made of it in v->rcvbuf. rcvbuf= asks for
- * that many bytes (0: nothing asked, the kernel's default stays); without it
- * num_bufs * buf_size of the queue, from 4 to 64 MiB, so that the kernel
- * holds about as many datagrams as the engine's queue when the consumer
- * falls behind. SO_RCVBUFFORCE when the process has CAP_NET_ADMIN, else (or
- * when that fails) SO_RCVBUF, which net.core.rmem_max caps. Never fails the
- * open: an unsized socket still receives, only it drops sooner, and the
+ * that many bytes; without it num_bufs * buf_size of the queue, from 4 to
+ * 64 MiB, so that the kernel holds about as many datagrams as the engine's
+ * queue when the consumer falls behind. rcvbuf=0 asks for nothing and looks
+ * nothing up: the kernel's default stays, and v->rcvbuf 0. SO_RCVBUF first,
+ * which net.core.rmem_max caps; when the kernel granted less than asked and
+ * the process may force it, SO_RCVBUFFORCE. The kernel reports twice what it
+ * granted, so that is what is compared with twice the target. Never fails
+ * the open: an unsized socket still receives, only it drops sooner, and the
  * warnings say so.
  */
 static void dq_udp_size_rcvbuf(struct dq_udp_buffer *v, int port)
@@ -992,49 +1010,51 @@ static void dq_udp_size_rcvbuf(struct dq_udp_buffer *v, int port)
 	char err[256];
 	int ret, got;
 
-	if (v->raw)
+	if (v->raw || !o->rcvbuf)
 		return;
 
-	if (o->rcvbuf >= 0) {
+	if (o->rcvbuf > 0) {
 		target = (uint64_t)o->rcvbuf;
 	} else {
 		ret = dq_engine_rx_limits(buf->ctx->engine, port, o->rxq, &lim);
-		if (!ret)
-			target = dq_udp_rcvbuf_target(lim.num_bufs, lim.buf_size);
+		if (ret) {
+			dev_perror(buf->dev, ret, "No packet buffers for queue %d", o->rxq);
+			return;
+		}
+		target = dq_udp_rcvbuf_target(lim.num_bufs, lim.buf_size);
 	}
 	if (target > INT_MAX)
 		target = INT_MAX;
 
-	if (target) {
-		ret = -EPERM;
-		if (dq_cap_net_admin())
-			ret = dq_rxq_set_rcvbuf(v->q, (int)target, true);
-		if (ret)
-			ret = dq_rxq_set_rcvbuf(v->q, (int)target, false);
-		if (ret) {
-			iio_strerror(-ret, err, sizeof(err));
-			dev_warn(buf->dev,
-					"Unable to set the UDP receive buffer of queue %d to %" PRIu64
-					" bytes: %s\n",
-					o->rxq, target, err);
-		}
+	ret = dq_rxq_set_rcvbuf(v->q, (int)target, false);
+	if (ret == -EADDRINUSE) {
+		dev_warn(buf->dev,
+				"The UDP receive buffer of queue %d is left as it is: another interface of %s has the same local_addr, and DAQIRI cannot tell their sockets apart\n",
+				o->rxq, o->yaml);
+	} else if (ret) {
+		iio_strerror(-ret, err, sizeof(err));
+		dev_warn(buf->dev,
+				"Unable to set the UDP receive buffer of queue %d to %" PRIu64
+				" bytes: %s\n",
+				o->rxq, target, err);
 	}
 
-	ret = dq_rxq_get_rcvbuf(v->q, &got);
-	if (ret) {
-		iio_strerror(-ret, err, sizeof(err));
-		dev_warn(buf->dev, "Unable to read the UDP receive buffer of queue %d: %s\n",
-				o->rxq, err);
+	if (dq_udp_read_rcvbuf(v, &got))
 		return;
-	}
+
+	/* Granted less than asked: force it where the process may */
+	if (!ret && (uint64_t)got < 2 * target && dq_can_force_rcvbuf() &&
+			!dq_rxq_set_rcvbuf(v->q, (int)target, true) && dq_udp_read_rcvbuf(v, &got))
+		return;
+
 	v->rcvbuf = got;
 
-	if ((uint64_t)got < target)
+	if (!ret && (uint64_t)got < 2 * target)
 		dev_warn(buf->dev,
-				"The UDP receive buffer of queue %d is %d bytes, below the %" PRIu64
-				" asked for: datagrams may be lost when the consumer falls behind. "
+				"The kernel granted %d bytes of the %" PRIu64
+				" asked for as the UDP receive buffer of queue %d: datagrams may be lost when the consumer falls behind. "
 				"Raise net.core.rmem_max on this host, or set rcvbuf= (0 leaves the kernel's default)\n",
-				o->rxq, got, target);
+				got / 2, target, o->rxq);
 }
 
 static bool dq_udp_refused(int err)

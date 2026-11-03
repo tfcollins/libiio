@@ -197,8 +197,11 @@ void dq_rxq_close(struct dq_rxq *q);
  * for, through DAQIRI: socket_get_server_conn_id() for the YAML's local_addr,
  * then socket_setsockopt() with SO_RCVBUFFORCE when <force> (which needs
  * CAP_NET_ADMIN), else SO_RCVBUF (which the kernel caps at
- * net.core.rmem_max). -ENOTSUP for a queue with no socket of its own (raw
- * engines), -ENOENT when DAQIRI has no server socket for local_addr, -EIO
+ * net.core.rmem_max). DAQIRI keys its server sockets by address alone, so
+ * the connection's (port, queue) (socket_get_port_queue()) must be this
+ * queue's. -ENOTSUP for a queue with no socket of its own (raw engines),
+ * -ENOENT when DAQIRI has no server socket for local_addr, -EADDRINUSE when
+ * the one it has belongs to another interface on the same local_addr, -EIO
  * when setsockopt() failed (DAQIRI logs why), -ESHUTDOWN once the process
  * exits.
  */
@@ -207,9 +210,9 @@ int dq_rxq_set_rcvbuf(struct dq_rxq *q, int bytes, bool force);
 /*
  * What the kernel made of it (getsockopt(SO_RCVBUF): twice what was granted).
  * DAQIRI has no getsockopt, so the socket is found among this process's file
- * descriptors: the one IPv4 UDP socket bound to local_addr (and connected to
- * remote_addr when the YAML has one). -ENOENT when none or more than one is,
- * -ENOTSUP as above.
+ * descriptors, each checked and read through a duplicate of its own: the one
+ * IPv4 UDP socket bound to local_addr (and connected to remote_addr when the
+ * YAML has one). -ENOENT when none or more than one is, -ENOTSUP as above.
  */
 int dq_rxq_get_rcvbuf(struct dq_rxq *q, int *bytes);
 

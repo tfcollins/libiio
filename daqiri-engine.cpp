@@ -14,13 +14,13 @@
 #include <daqiri/daqiri.h>
 #include <dirent.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <ifaddrs.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -433,8 +433,11 @@ bool sock_ipv4(int fd, bool peer, uint32_t *ip, uint16_t *port)
 
 /* The IPv4 UDP socket of queue <q> among this process's file descriptors:
  * bound to its local_addr and, when the YAML names one, connected to its
- * remote_addr. -ENOENT when none or more than one is. */
-int queue_socket_fd(const dq_rxq *q)
+ * remote_addr. Each candidate is duplicated first and checked through the
+ * duplicate, so that a descriptor closed and reused meanwhile cannot be
+ * mistaken for it. Returns that duplicate (close it), or -ENOENT when none or
+ * more than one matches. */
+int queue_socket_dup(const dq_rxq *q)
 {
 	int found = -ENOENT, nb = 0;
 	struct dirent *de;
@@ -445,34 +448,45 @@ int queue_socket_fd(const dq_rxq *q)
 		return -errno;
 
 	while ((de = readdir(d))) {
-		int fd, val;
+		int fd, dup, val;
 		socklen_t len = sizeof(val);
 		uint32_t ip;
 		uint16_t port;
-		struct stat st;
 		char *end;
+		bool match;
 
 		errno = 0;
 		fd = (int)std::strtol(de->d_name, &end, 10);
 		if (de->d_name[0] == '.' || *end || errno || fd == dirfd(d))
 			continue;
-		if (fstat(fd, &st) || !S_ISSOCK(st.st_mode))
-			continue;
-		if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &val, &len) || val != SOCK_DGRAM)
-			continue;
-		if (!sock_ipv4(fd, false, &ip, &port) || port != q->local_port ||
-				(q->local_ip && ip != q->local_ip))
-			continue;
-		if (q->remote_ip && (!sock_ipv4(fd, true, &ip, &port) || ip != q->remote_ip ||
-						    port != q->remote_port))
+
+		dup = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+		if (dup < 0)
 			continue;
 
-		found = fd;
+		/* getsockopt() fails with ENOTSOCK for anything but a socket */
+		match = !getsockopt(dup, SOL_SOCKET, SO_TYPE, &val, &len) && val == SOCK_DGRAM &&
+			sock_ipv4(dup, false, &ip, &port) && port == q->local_port &&
+			(!q->local_ip || ip == q->local_ip) &&
+			(!q->remote_ip || (sock_ipv4(dup, true, &ip, &port) && ip == q->remote_ip &&
+							  port == q->remote_port));
+		if (!match) {
+			close(dup);
+			continue;
+		}
+
+		if (found >= 0)
+			close(found);
+		found = dup;
 		nb++;
 	}
 	closedir(d);
 
-	return nb == 1 ? found : -ENOENT;
+	if (nb == 1)
+		return found;
+	if (found >= 0)
+		close(found);
+	return -ENOENT;
 }
 
 } // namespace
@@ -813,6 +827,7 @@ extern "C" int dq_rxq_set_rcvbuf(struct dq_rxq *q, int bytes, bool force)
 {
 	try {
 		std::lock_guard<std::mutex> lock(q->lock);
+		uint16_t port = 0, queue = 0;
 		uintptr_t conn_id = 0;
 		daqiri::Status st;
 
@@ -828,6 +843,15 @@ extern "C" int dq_rxq_set_rcvbuf(struct dq_rxq *q, int bytes, bool force)
 			return -ENOENT;
 		if (st != daqiri::Status::SUCCESS)
 			return status_to_errno(st);
+
+		/* DAQIRI keys server sockets by address alone: with another
+		 * interface on the same local_addr, the connection may be
+		 * that interface's */
+		st = daqiri::socket_get_port_queue(conn_id, &port, &queue);
+		if (st != daqiri::Status::SUCCESS)
+			return status_to_errno(st);
+		if (port != q->port || queue != q->queue)
+			return -EADDRINUSE;
 
 		st = daqiri::socket_setsockopt(conn_id, SOL_SOCKET,
 				force ? SO_RCVBUFFORCE : SO_RCVBUF, &bytes, sizeof(bytes));
@@ -845,18 +869,20 @@ extern "C" int dq_rxq_get_rcvbuf(struct dq_rxq *q, int *bytes)
 	try {
 		std::lock_guard<std::mutex> lock(q->lock);
 		socklen_t len = sizeof(*bytes);
-		int fd;
+		int fd, ret;
 
 		if (q->dead)
 			return -ESHUTDOWN;
 		if (!q->socket)
 			return -ENOTSUP;
 
-		fd = queue_socket_fd(q);
+		fd = queue_socket_dup(q);
 		if (fd < 0)
 			return fd;
 
-		return getsockopt(fd, SOL_SOCKET, SO_RCVBUF, bytes, &len) ? -errno : 0;
+		ret = getsockopt(fd, SOL_SOCKET, SO_RCVBUF, bytes, &len) ? -errno : 0;
+		close(fd);
+		return ret;
 	} catch (...) {
 		return -EIO;
 	}
