@@ -266,7 +266,7 @@ Artifacts per tier: junit.xml, perf.json, nic-before/after.json, cleanup.json, f
 backend log, provenance.txt (libiio sha, lib sha256, daqiri sha, plugin sha, board kernel/boot_id,
 bitstream sha), 64-packet pcap via `RawNetworkInterfaceDriver.record()` for socket vrt tiers.
 
-**{host-a} as a labgrid place:** `{lab-plugins-repo}/examples/lg_picard_cx5_exporter.yaml`
+**{host-a} as a labgrid place:** `{lab-plugins-repo}/examples/lg_{host-a}_cx5_exporter.yaml`
 (`NetworkInterface ifname: enp101s0np0` + `NetworkService {host-a-ip}`), exporter `-n {host-a}
 --hostname {host-a-ip}`, user unit `labgrid-exporter.service` (linger). Place `{host-a}-cx5`, match
 `{host-a}/cx5/*`, tags `nic=connectx5 speed=100g peer={host-c} pci=0000:65:00.0 driver=mlx5_core
@@ -276,7 +276,7 @@ add to `exporter_configs/place-tags.home-lab.yaml`; also seed `exporter-address/
 
 **Host prep (ansible, {infra-repo}):** `deploy-daqiri-host.yml` ({host-a}: DPDK 25.11+patches → /opt/dpdk,
 DAQIRI → /opt/daqiri, GRUB `default_hugepagesz=1G hugepagesz=1G hugepages=8` + `/dev/hugepages`
-group-rw (**reboot to schedule**; {host-a} hosts hal-voice), sysctl rmem_max/backlog, netplan
+group-rw (**reboot to schedule**; {host-a} hosts {host-a-service}), sysctl rmem_max/backlog, netplan
 `enp101s0np0` 192.0.2.2/24 mtu 9000, udev rw on `/dev/infiniband/*` for {user}, limited NOPASSWD
 sudoers for `tcpdump -i enp101s0np0`/`ethtool -S`, `nvidia-peermem` for GPU tier; {host-b}/{host-f}: run the
 tier inside the CI image with `--network host --cap-add NET_RAW`, `enp2s0` persistent address, ring
@@ -342,7 +342,7 @@ Interim with zero new runners: dispatch the launcher from `tfcollins/labgrid-adi
 1. DPDK on CX-5 (`dv_flow_en=2` hardcoded) → spikes A/B above; socket fallback.
 2. `libdaqiri.so` on GPU-less hosts (links `libcuda.so.1`?) → CUDA stubs in image; verify in M0.
 3. No libiio runners, `gh` unauthenticated → step 0; interim dispatch from labgrid-adi-hw-test.
-4. {host-a} reboot for 1G hugepages (hosts hal-voice/GPU watch) → schedule.
+4. {host-a} reboot for 1G hugepages (hosts {host-a-service}/GPU watch) → schedule.
 5. {host-b} `enp2s0` link down; {host-e} 1G SFP receiver unknown → physical surveys before M4.
 6. **100G tier depends on vrt49 PR #50** (`daq3_vcu118_vrt49_100g`) actually streaming; only the
    physical link is verified. M5's libiio exit criterion is the engine spike + 2-place launcher;

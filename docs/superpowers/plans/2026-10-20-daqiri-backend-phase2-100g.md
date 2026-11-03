@@ -17,7 +17,7 @@
 ## Facts established 2026-10-20 (verify before relying on them)
 
 - {host-a}: Ubuntu 24.04, kernel 7.0.0-38, 36 threads (W-2295, one NUMA node), `intel_iommu=on iommu=pt`, Secure Boot off, 2 MB hugetlbfs mounted at `/dev/hugepages` (root 755, `HugePages_Total: 0`), 1 GB pages supported but unconfigured, CUDA 13.4 at `/usr/local/cuda` (not on PATH), driver 595.99.02, DAQIRI 2026.7.0 at `$HOME/opt/daqiri` built with the socket engine only, rdma-core/libibverbs 50.0 runtime present, **no** `libibverbs-dev`, `rdma-core` (tools), `meson`, `ninja-build`, `libnuma-dev`; apt DPDK candidate is 23.11 (unusable: DAQIRI needs 25.11 + its own patches).
-- ConnectX-5 `enp101s0np0` = `mlx5_0`, PCI `0000:65:00.0`, MAC `e8:eb:d3:fe:22:44`, fw 16.32.1010, `/dev/infiniband/uverbs0` present, MTU 1500, 192.0.2.2/24 (NetworkManager, not netplan). Link is **down whenever the VCU118 is not driving its CMAC** (it flapped with vrt49 JTAG activity today); `{host-c}` was acquired by `{host-f}/{user}` at survey time.
+- ConnectX-5 `enp101s0np0` = `mlx5_0`, PCI `0000:65:00.0`, MAC `{host-a-cx5-mac}`, fw 16.32.1010, `/dev/infiniband/uverbs0` present, MTU 1500, 192.0.2.2/24 (NetworkManager, not netplan). Link is **down whenever the VCU118 is not driving its CMAC** (it flapped with vrt49 JTAG activity today); `{host-c}` was acquired by `{host-f}/{user}` at survey time.
 - DAQIRI (pin `7c1f5d05`): DPDK engine builds devargs `dv_flow_en=2` unless the interface has eCPRI flows (`src/engines/dpdk/daqiri_dpdk_engine.cpp:2349`); static UDP flows use the synchronous `rte_flow_create`, the async/template API is only configured when `dynamic_flow_capacity` > 0, so `dv_flow_en=1` is viable for our static flows. The ibverbs engine checks only mlx5dv + DevX + striding RQ. `loopback: "hw"` exists **only** in the ibverbs engine (single port, TX loops into the port's own RX steering, "the NIC must remain enumerated without a link", `eth_dst_addr` = the port's own MAC). `loopback: "sw"` needs no NIC. Raw packets start at the Ethernet header (UDP payload at byte 42); HDS splits a packet at `buf_size` of the queue's first memory region into segment 0/1, read with `get_segment_packet_ptr/length(burst, seg, idx)`. Memory kinds: `host`, `host_pinned`, `huge`, `device`. TX API: `create_tx_burst_params`, `set_header(msg, port, queue, batch, 1)`, `is_tx_burst_available`, `get_tx_packet_burst`, `get_segment_packet_ptr(msg, 0, i)`, `set_packet_lengths(msg, i, {len})`, `send_tx_burst`, `free_all_packets_and_burst_tx`, `wait_for_tx_idle`.
 - vrt49 PR #50 (`feat/vcu118-daq3-vrt49`) defines the VCU118+DAQ3 100G TX project but **produces no bitstream yet**; the framer's network endpoint is set through IIO attrs `v49_udp_dest_mac/dest_ip/dest_port/source_mac/source_ip/source_port/ttl/apply/status`, plus `v49_enable`, `v49_stream_id`, `v49_packet_mtu`; vrt49 CI uses `192.0.2.1 → 192.0.2.2:4991`. So the `100g-vrt` tier cannot pass until vrt49 ships a bitstream (spec risk 6); this plan's hardware gate is the loopback tier.
 - labgrid-plugins: `adi-lg request --part --carrier --mode --run --wait --coord --no-boot --validate --power-down`, `adi-lg setup-runner --scope --name --labels --dir --coord --token --non-interactive`, `reserve_and_acquire(coord, filt, *, wait)` / `release(coord, reservation)` in `adi_lg_plugins/request/reservation.py`, place tags seeded with `exporter_configs/scripts/seed-place-tags.sh --coordinator {coordinator} --manifest exporter_configs/place-tags.home-lab.yaml`. `{host-c}` tags: `boot-strategy=BootFabric carrier=vcu118 daughter-board=daq3 runner=hw-{host-c}`. Coordinator `{coordinator}`; `labgrid-client` lives on {host-b} (`{lab-venv}/bin`), not on {host-a}.
@@ -388,7 +388,7 @@ git add tests/daqiri/resources/cx5-dpdk-rx.yaml.in utils/iio_daqiri_bench.c man/
 ### Task 8: {host-a} as labgrid place `{host-a}-cx5` (exporter, tags, runner)
 
 **Files (labgrid-plugins repo):**
-- Create: `examples/lg_picard_cx5_exporter.yaml`
+- Create: `examples/lg_{host-a}_cx5_exporter.yaml`
 - Modify: `exporter_configs/place-tags.home-lab.yaml` (`{host-a}-cx5` entry; add `exporter-address`/`exporter-hostname` to `{host-c}` and `{host-d}`)
 - Modify: `docs/` page listing home-lab places (the one `seed-place-tags.sh` header points at)
 **Files (infra repo):**
@@ -396,7 +396,7 @@ git add tests/daqiri/resources/cx5-dpdk-rx.yaml.in utils/iio_daqiri_bench.c man/
 - Modify: `HOSTS.md` (`{host-a}-cx5` row in the rigs table)
 
 **Interfaces:**
-- Exporter YAML: group `cx5` with `NetworkInterface` (`cls: NetworkInterface`, `ifname: enp101s0np0`) and `NetworkService` (`address: {host-a-ip}`, `username: {user}`); run as `labgrid-exporter -c {coordinator} -n {host-a} --hostname {host-a-ip} ~/labgrid/lg_picard_cx5_exporter.yaml`.
+- Exporter YAML: group `cx5` with `NetworkInterface` (`cls: NetworkInterface`, `ifname: enp101s0np0`) and `NetworkService` (`address: {host-a-ip}`, `username: {user}`); run as `labgrid-exporter -c {coordinator} -n {host-a} --hostname {host-a-ip} ~/labgrid/lg_{host-a}_cx5_exporter.yaml`.
 - Place `{host-a}-cx5`: match `{host-a}/cx5/*`; tags `nic=connectx5 speed=100g peer={host-c} pci=0000:65:00.0 driver=mlx5_core link-address=192.0.2.2/24 mtu=9000 runner=hw-{host-a} exporter-address={host-a-ip} exporter-hostname={host-a}`.
 - Runner: `adi-lg setup-runner --scope repo:tfcollins/libiio --name {host-a}-libiio --labels hw-{host-a} --dir ~/actions-runner-libiio --non-interactive` (user unit `actions-runner-libiio.service`).
 
@@ -422,7 +422,7 @@ Run on {host-a}: the `adi-lg setup-runner` line above with `--token "$(gh auth t
 - [ ] **Step 5: Commits (two repos)**
 
 ```bash
-cd {lab-plugins-repo} && git add examples/lg_picard_cx5_exporter.yaml exporter_configs/place-tags.home-lab.yaml docs && git commit -s -m "exporter: add {host-a}-cx5 (ConnectX-5 100G receiver) place"
+cd {lab-plugins-repo} && git add examples/lg_{host-a}_cx5_exporter.yaml exporter_configs/place-tags.home-lab.yaml docs && git commit -s -m "exporter: add {host-a}-cx5 (ConnectX-5 100G receiver) place"
 cd {infra-repo} && git add ansible/playbooks/deploy-labgrid-exporter-{host-a}.yml HOSTS.md && git commit -s -m "ansible: labgrid exporter on {host-a} for place {host-a}-cx5"
 ```
 

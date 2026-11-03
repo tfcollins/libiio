@@ -190,7 +190,7 @@ path (`data=tcp`), with a board on the network:
 
 ### Gate record (ZCU102 + ADRV9002, Kuiper 2023_R2, libiio 0.26), 2026-11-02
 
-All five items passed at `6943650b`.
+All five items passed at `af299460` (`6943650b` before the 2026-11-03 history rewrite).
 
 **Board.** ZCU102 + ADRV9002 (LVDS) on the stock Kuiper 2023_R2_P1 boot files:
 
