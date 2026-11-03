@@ -117,3 +117,13 @@ bool dq_udp_drain_over(uint64_t start, uint64_t last, uint64_t now)
 	/* A burst later than now is news, not a wrapped quiet time */
 	return now >= quiet_from && now - quiet_from >= idle;
 }
+
+uint64_t dq_udp_rcvbuf_target(uint64_t num_bufs, uint64_t buf_size)
+{
+	if (buf_size && num_bufs > DQ_UDP_RCVBUF_MAX / buf_size)
+		return DQ_UDP_RCVBUF_MAX;
+	if (num_bufs * buf_size < DQ_UDP_RCVBUF_MIN)
+		return DQ_UDP_RCVBUF_MIN;
+
+	return num_bufs * buf_size;
+}

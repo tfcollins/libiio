@@ -36,7 +36,8 @@
  * The flags byte is reserved and not checked.
  *
  * It also decides when the drain after DISABLE_BUFFER is over
- * (dq_udp_drain_over()).
+ * (dq_udp_drain_over()), and how large a receive buffer to ask for
+ * (dq_udp_rcvbuf_target()).
  */
 
 #ifndef DAQIRI_UDP_STREAM_H
@@ -126,6 +127,18 @@ int dq_udp_rx_datagram(
  * than <now>, a burst stored after the clock was read, is not quiet.
  */
 bool dq_udp_drain_over(uint64_t start, uint64_t last, uint64_t now);
+
+/* The receive buffer asked for a socket engine queue's socket by default */
+#define DQ_UDP_RCVBUF_MIN ((uint64_t)4 << 20)
+#define DQ_UDP_RCVBUF_MAX ((uint64_t)64 << 20)
+
+/*
+ * The bytes of the queue's packet buffers, <num_bufs> * <buf_size> of its
+ * memory region, at least DQ_UDP_RCVBUF_MIN and at most DQ_UDP_RCVBUF_MAX
+ * (also when the product does not fit 64 bits): the kernel then holds as many
+ * datagrams as the engine does when the consumer falls behind.
+ */
+uint64_t dq_udp_rcvbuf_target(uint64_t num_bufs, uint64_t buf_size);
 
 #ifdef __cplusplus
 }
