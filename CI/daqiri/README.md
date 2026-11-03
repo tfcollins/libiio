@@ -1,5 +1,9 @@
 # DAQIRI dev build
 
+> Lab host names, addresses and local paths in this document are placeholders
+> (`{host-a}`, `{coordinator}`, ...). The mapping lives in a local, untracked
+> `HOSTS.md` at the repository root (ignored by `.gitignore`).
+
 libiio's `daqiri:` backend uses NVIDIA DAQIRI (https://github.com/NVIDIA/daqiri)
 for packet I/O. DAQIRI has a hard CUDA build dependency.
 
@@ -18,7 +22,7 @@ list defaults to empty (socket engine only). The last output line is
 `pkg-config --modversion daqiri` (`2026.7.0`). Consumers use
 `-DCMAKE_PREFIX_PATH=<prefix>` (package `daqiri`, target `daqiri::daqiri`).
 
-CMake does not find `nvcc` on its own when it is not on PATH. On picard
+CMake does not find `nvcc` on its own when it is not on PATH. On {host-a}
 (CUDA 13.4) the build needs:
 
     DAQIRI_CMAKE_EXTRA="-DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.4/bin/nvcc -DCUDAToolkit_ROOT=/usr/local/cuda-13.4" \
@@ -76,7 +80,7 @@ engine, hence `engine: "dpdk"`):
 
     daqiri-probe-raw tests/daqiri/resources/raw-sw-loopback-dpdk.yaml
 
-Hardware tests (ctest label `daqiri-hw`, picard only) take the NIC from
+Hardware tests (ctest label `daqiri-hw`, {host-a} only) take the NIC from
 `DAQIRI_HW_PCI` (PCI address, e.g. `0000:65:00.0`) and `DAQIRI_HW_MAC` (peer
 MAC); GitHub-hosted jobs never run them. The tests themselves land after this
 build change.
@@ -135,7 +139,7 @@ builds that get installed.
 Run-time libraries: in the build tree no `LD_LIBRARY_PATH` is needed. CMake's
 build-tree RUNPATH on `libiio-daqiri.so` covers `$HOME/opt/daqiri/lib` and the
 CUDA `lib64`, `libdaqiri.so`'s own `$ORIGIN` RUNPATH finds `libdaqiri_socket`
-and `yaml-cpp`, and on picard `libcudart`/`libcuda` also resolve through
+and `yaml-cpp`, and on {host-a} `libcudart`/`libcuda` also resolve through
 ldconfig; `env -u LD_LIBRARY_PATH ldd build-daqiri/libiio-daqiri.so` reports
 nothing missing. CMake drops the build RUNPATH on install, so an installed
 module needs `LD_LIBRARY_PATH=$HOME/opt/daqiri/lib` (or an ldconfig entry)

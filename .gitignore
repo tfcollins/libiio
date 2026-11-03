@@ -19,3 +19,6 @@ build/
 
 Doxyfile
 doxygen_sqlite3.db
+
+# Local lab host details (placeholders in the docs point here); never tracked
+/HOSTS.md

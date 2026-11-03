@@ -1,7 +1,11 @@
 # DAQIRI backend for libiio — design
 
-Date: 2026-10-19. Repo: /home/tcollins/dev/libiio (tfcollins/libiio). Work branch: `feature/daqiri-backend` from master.
-Companion repos touched: ~/dev/labgrid-plugins (exporter config + place tags), ~/dev/infra (ansible host prep, HOSTS.md).
+> Lab host names, addresses and local paths in this document are placeholders
+> (`{host-a}`, `{coordinator}`, ...). The mapping lives in a local, untracked
+> `HOSTS.md` at the repository root (ignored by `.gitignore`).
+
+Date: 2026-10-19. Repo: {libiio-checkout} (tfcollins/libiio). Work branch: `feature/daqiri-backend` from master.
+Companion repos touched: {lab-plugins-repo} (exporter config + place tags), {infra-repo} (ansible host prep, HOSTS.md).
 
 ## Context
 
@@ -14,7 +18,7 @@ contract and control plane are ours.
 
 Goal: a `daqiri:` backend so unmodified libiio apps (C, Python bindings, pyadi-iio) receive
 high-rate streams through DAQIRI at 1G, 10G and 100G, with software tests in GitHub CI and HIL
-tests on the labgrid fleet (coordinator 10.0.0.41:20408).
+tests on the labgrid fleet (coordinator {coordinator}).
 
 ### Decisions (user, 2026-10-19)
 
@@ -24,8 +28,8 @@ tests on the labgrid fleet (coordinator 10.0.0.41:20408).
 | Framings | (a) VITA 49.2 IF-Data over UDP as emitted by vrt49 FPGA framers; (b) stock iiod binary protocol so **unchanged libiio v1 boards running iiod** work with zero board changes. |
 | Senders v1 | Stock iiod on Kuiper boards; vrt49 FPGA framers (Z7035 1G SFP, ZU11EG 10G SFP+, VCU118+DAQ3 100G QSFP). No iiod/tinyiiod/Zephyr changes. |
 | Loss model | Free-running sender; sequence-based loss detection + counters; no credits. |
-| 100G receiver | DAQIRI DPDK engine on picard's ConnectX-5. |
-| HIL | VCU118+DAQ3 is already labgrid place `nuc`; add picard's 100G NIC as a new place `picard-cx5`. |
+| 100G receiver | DAQIRI DPDK engine on {host-a}'s ConnectX-5. |
+| HIL | VCU118+DAQ3 is already labgrid place `{host-c}`; add {host-a}'s 100G NIC as a new place `{host-a}-cx5`. |
 | GPU | Design the device-memory path now; host memory is the baseline. |
 | Packaging (my call) | Dynamic module `libiio-daqiri.so` via WITH_MODULES, so the C core never links C++/CUDA. |
 
@@ -46,10 +50,10 @@ replaces `framing=` (`framing=iiod` is now `data=tcp`). The VITA 49.2 parts of t
 
 | Tier | Sender (place) | Receiver NIC | Notes |
 |---|---|---|---|
-| 1G-iiod | any Kuiper place: `bq`, `nemo`, `tron`, `lablp` | the runner host's RJ45 | stock iiod |
-| 1G-vrt | `lablp` ADRV9361-Z7035 1G SFP (`adrv9361z7035_vrt49_sfp`) | **unknown**: no physical receiver leg exists in vrt49 CI | cabling survey needed |
-| 10G-vrt | `tron` ADRV9009-ZU11EG SFP+ (`adrv9009zu11eg_vrt49_corundum`) | nemo `enp2s0` Intel 82599, 192.0.2.2/24, **link down today** | vrt49 serializes tron with `/tmp/vrt49-corundum-hardware.lock` on nemo |
-| 100G-vrt | `nuc` VCU118+DAQ3 (BootFabric; JTAG + Vivado resources on nuc) | picard `enp101s0np0` ConnectX-5 (MT27800, fw 16.32.1010), link up 100G, 192.0.2.2/24, MTU 1500, PCI 0000:65:00.0 | vrt49 PR #50 `daq3_vcu118_vrt49_100g`; picard: 36-core W-2295, 62 GB, Quadro RTX 4000, CUDA 13.4, libibverbs present, **no DPDK, no hugepages, no exporter, sudo needs password** |
+| 1G-iiod | any Kuiper place: `{host-f}`, `{host-b}`, `{host-d}`, `{host-e}` | the runner host's RJ45 | stock iiod |
+| 1G-vrt | `{host-e}` ADRV9361-Z7035 1G SFP (`adrv9361z7035_vrt49_sfp`) | **unknown**: no physical receiver leg exists in vrt49 CI | cabling survey needed |
+| 10G-vrt | `{host-d}` ADRV9009-ZU11EG SFP+ (`adrv9009zu11eg_vrt49_corundum`) | {host-b} `enp2s0` Intel 82599, 192.0.2.2/24, **link down today** | vrt49 serializes {host-d} with `/tmp/vrt49-corundum-hardware.lock` on {host-b} |
+| 100G-vrt | `{host-c}` VCU118+DAQ3 (BootFabric; JTAG + Vivado resources on {host-c}) | {host-a} `enp101s0np0` ConnectX-5 (MT27800, fw 16.32.1010), link up 100G, 192.0.2.2/24, MTU 1500, PCI 0000:65:00.0 | vrt49 PR #50 `daq3_vcu118_vrt49_100g`; {host-a}: 36-core W-2295, 62 GB, Quadro RTX 4000, CUDA 13.4, libibverbs present, **no DPDK, no hugepages, no exporter, sudo needs password** |
 
 DAQIRI source facts that matter: DPDK engine **hardcodes** mlx5 devargs `dv_flow_en=2` (HW steering,
 needs ConnectX-6 Dx+; CX-5 only supports `dv_flow_en=1`), no YAML/env override. The ibverbs engine
@@ -61,8 +65,8 @@ target `daqiri::daqiri`; `find_package(CUDAToolkit REQUIRED)` unconditional. All
 `CI/daqiri/DAQIRI_REF` and every DAQIRI claim is re-verified against the pinned tree when bumped.
 (The abandoned branch pinned `993363da`; do not reuse it.)
 
-Known blockers: `gh` unauthenticated for tfcollins (cannot inspect/register runners); picard sudo
-password (all host prep via ansible); labgrid-client not on picard.
+Known blockers: `gh` unauthenticated for tfcollins (cannot inspect/register runners); {host-a} sudo
+password (all host prep via ansible); labgrid-client not on {host-a}.
 
 ---
 
@@ -241,8 +245,8 @@ logic of tests/hardware/test_ad9364.c), `perf.py` (perf.json schema + `--compare
 `launcher.py --tier {1g-iiod,1g-vrt,10g-vrt,100g-vrt,100g-gpu} --build <abs> --evidence <abs> [--place]`:
 preflight (venv pins, cmake build, lib sha256, coordinator reachable, `validate_place` tags,
 **exporter identity from an explicit `exporter-address=<ip>` place tag, bare hostnames rejected** —
-this is what broke the abandoned harness on tron) → host lock (`/tmp/vrt49-corundum-hardware.lock`
-on nemo when tron is used; `/tmp/libiio-daqiri-<place>.lock` otherwise) → for vrt tiers acquire the
+this is what broke the abandoned harness on {host-d}) → host lock (`/tmp/vrt49-corundum-hardware.lock`
+on {host-b} when {host-d} is used; `/tmp/libiio-daqiri-<place>.lock` otherwise) → for vrt tiers acquire the
 receiver NIC place first via the plugins' `Reservation` API (reserve, capture token, bounded separate
 `wait`, acquire; never `reserve --wait`) → board via `adi-lg request --part --carrier --mode reserve
 --run "<pytest>"` (one place per request) → boot via place strategy with `exporter:` payload prefixes →
@@ -252,40 +256,40 @@ board IP via `resolve_uri` → tier tests, `--junitxml`, perf.json → cleanup l
 
 | Tier | Places / runner | Config | Correctness gate | Capacity gate |
 |---|---|---|---|---|
-| 1G-iiod | `nemo`/`bq` (then tron, lablp); hw-nemo / hw-bq | `framing=iiod`, socket TCP | TX→RX loopback ramp continuous in 200 blocks; 32 blocks memcmp `ip:` vs `daqiri:` | 30 s zero dequeue errors; Gbps ≥ 1.0× `ip:` baseline same session |
-| 1G-vrt | `lablp` → receiver TBD; hw-bq | `framing=vrt`, socket UDP; framer attrs (`v49_*`) set via iiod | prologue == framer sysfs; pkt_count contiguous; ramp continuity 60 s | zero lost 60 s at 1G; NIC `rx_missed`=0; `UdpRcvbufErrors`=0 |
-| 10G-vrt | `tron` → nemo `enp2s0`; hw-nemo; vrt49 flock | `framing=vrt`, socket UDP (RSS multi-queue only if framer can vary src port) | ¼ rate: zero loss 60 s + continuity | full rate 60 s: `lost == rx_missed + UdpRcvbufErrors` ±1 %, loss ≤ 1e-4 initially |
-| 100G-vrt | `nuc` + `picard-cx5`; hw-picard | `framing=vrt`, ibverbs or DPDK (per spike), jumbo 8968, MTU 9000; socket fallback as 2nd case | DAQ3 ≈ 32 Gbps payload: ramp/PRBS continuity 60 s, zero loss | DPDK/ibverbs: zero loss 60 s; `rte_eth_stats` imissed reconciles with `lost` |
+| 1G-iiod | `{host-b}`/`{host-f}` (then {host-d}, {host-e}); hw-{host-b} / hw-{host-f} | `framing=iiod`, socket TCP | TX→RX loopback ramp continuous in 200 blocks; 32 blocks memcmp `ip:` vs `daqiri:` | 30 s zero dequeue errors; Gbps ≥ 1.0× `ip:` baseline same session |
+| 1G-vrt | `{host-e}` → receiver TBD; hw-{host-f} | `framing=vrt`, socket UDP; framer attrs (`v49_*`) set via iiod | prologue == framer sysfs; pkt_count contiguous; ramp continuity 60 s | zero lost 60 s at 1G; NIC `rx_missed`=0; `UdpRcvbufErrors`=0 |
+| 10G-vrt | `{host-d}` → {host-b} `enp2s0`; hw-{host-b}; vrt49 flock | `framing=vrt`, socket UDP (RSS multi-queue only if framer can vary src port) | ¼ rate: zero loss 60 s + continuity | full rate 60 s: `lost == rx_missed + UdpRcvbufErrors` ±1 %, loss ≤ 1e-4 initially |
+| 100G-vrt | `{host-c}` + `{host-a}-cx5`; hw-{host-a} | `framing=vrt`, ibverbs or DPDK (per spike), jumbo 8968, MTU 9000; socket fallback as 2nd case | DAQ3 ≈ 32 Gbps payload: ramp/PRBS continuity 60 s, zero loss | DPDK/ibverbs: zero loss 60 s; `rte_eth_stats` imissed reconciles with `lost` |
 | 100G-gpu | same + `mem=device` | HDS + device regions | bench `--gpu` D2H + ramp check, zero loss 60 s | + nvidia-smi util, `topo -m` recorded |
 
 Artifacts per tier: junit.xml, perf.json, nic-before/after.json, cleanup.json, failure.json (redacted),
 backend log, provenance.txt (libiio sha, lib sha256, daqiri sha, plugin sha, board kernel/boot_id,
 bitstream sha), 64-packet pcap via `RawNetworkInterfaceDriver.record()` for socket vrt tiers.
 
-**picard as a labgrid place:** `~/dev/labgrid-plugins/examples/lg_picard_cx5_exporter.yaml`
-(`NetworkInterface ifname: enp101s0np0` + `NetworkService 10.0.0.101`), exporter `-n picard
---hostname 10.0.0.101`, user unit `labgrid-exporter.service` (linger). Place `picard-cx5`, match
-`picard/cx5/*`, tags `nic=connectx5 speed=100g peer=nuc pci=0000:65:00.0 driver=mlx5_core
-link-address=192.0.2.2/24 mtu=9000 runner=hw-picard exporter-address=10.0.0.101 exporter-hostname=picard`;
-add to `exporter_configs/place-tags.home-lab.yaml`; also seed `exporter-address/-hostname` on tron
-(10.0.0.232), nuc (10.0.0.121), lablp, bq, nemo. HOSTS.md gets a `picard-cx5` row.
+**{host-a} as a labgrid place:** `{lab-plugins-repo}/examples/lg_picard_cx5_exporter.yaml`
+(`NetworkInterface ifname: enp101s0np0` + `NetworkService {host-a-ip}`), exporter `-n {host-a}
+--hostname {host-a-ip}`, user unit `labgrid-exporter.service` (linger). Place `{host-a}-cx5`, match
+`{host-a}/cx5/*`, tags `nic=connectx5 speed=100g peer={host-c} pci=0000:65:00.0 driver=mlx5_core
+link-address=192.0.2.2/24 mtu=9000 runner=hw-{host-a} exporter-address={host-a-ip} exporter-hostname={host-a}`;
+add to `exporter_configs/place-tags.home-lab.yaml`; also seed `exporter-address/-hostname` on {host-d}
+({host-d-ip}), {host-c} ({host-c-ip}), {host-e}, {host-f}, {host-b}. HOSTS.md gets a `{host-a}-cx5` row.
 
-**Host prep (ansible, ~/dev/infra):** `deploy-daqiri-host.yml` (picard: DPDK 25.11+patches → /opt/dpdk,
+**Host prep (ansible, {infra-repo}):** `deploy-daqiri-host.yml` ({host-a}: DPDK 25.11+patches → /opt/dpdk,
 DAQIRI → /opt/daqiri, GRUB `default_hugepagesz=1G hugepagesz=1G hugepages=8` + `/dev/hugepages`
-group-rw (**reboot to schedule**; picard hosts hal-voice), sysctl rmem_max/backlog, netplan
-`enp101s0np0` 192.0.2.2/24 mtu 9000, udev rw on `/dev/infiniband/*` for tcollins, limited NOPASSWD
-sudoers for `tcpdump -i enp101s0np0`/`ethtool -S`, `nvidia-peermem` for GPU tier; nemo/bq: run the
+group-rw (**reboot to schedule**; {host-a} hosts hal-voice), sysctl rmem_max/backlog, netplan
+`enp101s0np0` 192.0.2.2/24 mtu 9000, udev rw on `/dev/infiniband/*` for {user}, limited NOPASSWD
+sudoers for `tcpdump -i enp101s0np0`/`ethtool -S`, `nvidia-peermem` for GPU tier; {host-b}/{host-f}: run the
 tier inside the CI image with `--network host --cap-add NET_RAW`, `enp2s0` persistent address, ring
-4096, venv under `/mnt/onetb/scratch`), `deploy-labgrid-exporter.yml` (picard), templates.
+4096, venv under `{scratch}`), `deploy-labgrid-exporter.yml` ({host-a}), templates.
 
 **CI:** `.github/workflows/daqiri-hil.yml`: `workflow_dispatch` (tier, duration, wait, ref) +
 nightly 04:00 UTC (clear of daily-infra), `concurrency: daqiri-hil`; job `preflight` on
 `[self-hosted, hw-coordinator]` emits the matrix (skips disabled/acquired places); job `hil` matrix
 `runs-on: [self-hosted, ${{matrix.runner}}]`, `fail-fast: false`, 60-min timeout, `continue-on-error`
 until 5 green nightlies; "require non-skipping JUnit evidence" step; artifact upload. Runner labels
-needed for tfcollins/libiio: `hw-coordinator`+`hw-nemo` (nemo), `hw-bq` (bq), `hw-picard` (picard),
+needed for tfcollins/libiio: `hw-coordinator`+`hw-{host-b}` ({host-b}), `hw-{host-f}` ({host-f}), `hw-{host-a}` ({host-a}),
 registered with `adi-lg setup-runner --scope repo:tfcollins/libiio` into `~/actions-runner-libiio`
-(user unit `actions-runner-libiio.service` on nemo/bq, `github-runner-libiio.service` on picard).
+(user unit `actions-runner-libiio.service` on {host-b}/{host-f}, `github-runner-libiio.service` on {host-a}).
 Interim with zero new runners: dispatch the launcher from `tfcollins/labgrid-adi-hw-test`.
 
 ---
@@ -306,14 +310,14 @@ Interim with zero new runners: dispatch the launcher from `tfcollins/labgrid-adi
 3. **M2 framing=vrt over socket UDP** (daqiri-vrt-prologue.h, daqiri-vrt.c, FSM, counters, attrs,
    lossy; `vrt_sender.c`; `test_vrt_loopback`). Done: counters == sender oracle; works against vrt49
    `vrt49-send-test-pattern` and a real framer.
-4. **M3 HIL 1G-iiod** (launcher, conftest, receiver.py, tier test, place tags, runners on nemo/bq,
-   `daqiri-hil.yml` with this tier only, `iio_daqiri_bench`). Done: 5 green nightlies on nemo and bq;
+4. **M3 HIL 1G-iiod** (launcher, conftest, receiver.py, tier test, place tags, runners on {host-b}/{host-f},
+   `daqiri-hil.yml` with this tier only, `iio_daqiri_bench`). Done: 5 green nightlies on {host-b} and {host-f};
    baseline perf.json committed.
-5. **M4 1G-vrt (lablp)** after cabling survey; **10G-vrt (tron→nemo)** with vrt49 flock, bitstream
-   provenance from vrt49 artifacts, DAQIRI in container on nemo, pcap golden captured into
+5. **M4 1G-vrt ({host-e})** after cabling survey; **10G-vrt ({host-d}→{host-b})** with vrt49 flock, bitstream
+   provenance from vrt49 artifacts, DAQIRI in container on {host-b}, pcap golden captured into
    `tests/resources/vrt/`.
 6. **M5 raw engines + 100G** (l2 validation, VLAN, HDS-aware `dq_pkt`, `iface`/`rxq`, hugepage-backed
-   host blocks; ansible host prep; picard exporter + place; picard runner; 2-place launcher path;
+   host blocks; ansible host prep; {host-a} exporter + place; {host-a} runner; 2-place launcher path;
    engine spikes A/B). Done: zero loss 60 s at DAQ3 design rate; both places released and verified.
 7. **M6 memory domains** (`mem=pinned`; `daqiri_mem_domain`/`daqiri_gpu_device` attrs; no core change)
    then **mem=device** (daqiri-gather.cu, deferred burst free, event wait in dequeue; CUDA sample;
@@ -330,7 +334,7 @@ Interim with zero new runners: dispatch the launcher from `tfcollins/labgrid-adi
 - Hardware: `python tests/hardware/daqiri/launcher.py --tier <t> --build <b> --evidence <e>` per tier;
   JUnit has every required case passing with no skips; `cleanup.json` all true; perf.json within
   baseline (`perf.py --compare`); coordinator readback shows places free.
-- 100G: `iio_daqiri_bench -u "daqiri:<nuc-ip>,yaml=/etc/libiio/daqiri/picard-cx5.yaml" -T 60 --check ramp`
+- 100G: `iio_daqiri_bench -u "daqiri:<{host-c}-ip>,yaml=/etc/libiio/daqiri/{host-a}-cx5.yaml" -T 60 --check ramp`
   reports zero lost at design rate; `ethtool -S enp101s0np0` / `rte_eth_stats` reconcile.
 
 ## Risks / open items
@@ -338,8 +342,8 @@ Interim with zero new runners: dispatch the launcher from `tfcollins/labgrid-adi
 1. DPDK on CX-5 (`dv_flow_en=2` hardcoded) → spikes A/B above; socket fallback.
 2. `libdaqiri.so` on GPU-less hosts (links `libcuda.so.1`?) → CUDA stubs in image; verify in M0.
 3. No libiio runners, `gh` unauthenticated → step 0; interim dispatch from labgrid-adi-hw-test.
-4. picard reboot for 1G hugepages (hosts hal-voice/GPU watch) → schedule.
-5. nemo `enp2s0` link down; lablp 1G SFP receiver unknown → physical surveys before M4.
+4. {host-a} reboot for 1G hugepages (hosts hal-voice/GPU watch) → schedule.
+5. {host-b} `enp2s0` link down; {host-e} 1G SFP receiver unknown → physical surveys before M4.
 6. **100G tier depends on vrt49 PR #50** (`daq3_vcu118_vrt49_100g`) actually streaming; only the
    physical link is verified. M5's libiio exit criterion is the engine spike + 2-place launcher;
    the zero-loss gate is contingent on vrt49 validating the bitstream (tracked in vrt49, not here).

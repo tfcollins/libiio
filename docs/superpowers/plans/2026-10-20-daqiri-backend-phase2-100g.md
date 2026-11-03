@@ -1,35 +1,39 @@
-# DAQIRI backend phase 2 (M5: raw engines + 100G on picard) Implementation Plan
+# DAQIRI backend phase 2 (M5: raw engines + 100G on {host-a}) Implementation Plan
+
+> Lab host names, addresses and local paths in this document are placeholders
+> (`{host-a}`, `{coordinator}`, ...). The mapping lives in a local, untracked
+> `HOSTS.md` at the repository root (ignored by `.gitignore`).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `framing=vrt` streams through DAQIRI's raw engines (ibverbs and DPDK) on picard's ConnectX-5, with L2/L3/L4 validation, header-data-split-aware packets, hugepage host blocks, a self-contained 100G hardware loopback test on picard, picard registered as labgrid place `picard-cx5`, and a two-place 100G tier harness ready for the VCU118+DAQ3 framer.
+**Goal:** `framing=vrt` streams through DAQIRI's raw engines (ibverbs and DPDK) on {host-a}'s ConnectX-5, with L2/L3/L4 validation, header-data-split-aware packets, hugepage host blocks, a self-contained 100G hardware loopback test on {host-a}, {host-a} registered as labgrid place `{host-a}-cx5`, and a two-place 100G tier harness ready for the VCU118+DAQ3 framer.
 
-**Architecture:** The C++ shim (`daqiri-engine.cpp`) learns to open raw-stream queues and expose per-packet segments; a DAQIRI-free L2 parser (`daqiri-l2.[ch]`) joins the framing library and runs per packet in the VRT poller when the queue is raw. DPDK 25.11 and DAQIRI's raw engines are built by scripts under `CI/daqiri/` (dev prefix `$HOME/opt`, image prefix `/opt`), with one carried DAQIRI patch making mlx5 `dv_flow_en` overridable by environment so the ConnectX-5 can run the DPDK engine. Test traffic on picard comes from DAQIRI's single-port hardware loopback (ibverbs engine, no cable needed) driven by a new raw VRT sender. Host prep is an ansible play; the place, exporter and runner follow the labgrid-plugins conventions.
+**Architecture:** The C++ shim (`daqiri-engine.cpp`) learns to open raw-stream queues and expose per-packet segments; a DAQIRI-free L2 parser (`daqiri-l2.[ch]`) joins the framing library and runs per packet in the VRT poller when the queue is raw. DPDK 25.11 and DAQIRI's raw engines are built by scripts under `CI/daqiri/` (dev prefix `$HOME/opt`, image prefix `/opt`), with one carried DAQIRI patch making mlx5 `dv_flow_en` overridable by environment so the ConnectX-5 can run the DPDK engine. Test traffic on {host-a} comes from DAQIRI's single-port hardware loopback (ibverbs engine, no cable needed) driven by a new raw VRT sender. Host prep is an ansible play; the place, exporter and runner follow the labgrid-plugins conventions.
 
 **Tech Stack:** C99 (module, framing lib, tests), C++17 (DAQIRI shim, raw sender), DPDK 25.11 + DAQIRI patches, rdma-core 50, CMake/ctest, Python 3 (golden vectors, tier harness, pytest), ansible, labgrid 26 + labgrid-plugins, GitHub Actions.
 
-**Spec:** `docs/superpowers/specs/2026-10-19-daqiri-backend-design.md` (sections "100G engine strategy", "Hardware tiers", "picard as a labgrid place", "Host prep", milestone M5). Phase 1 plan: `docs/superpowers/plans/2026-10-19-daqiri-backend-phase1.md` (its Global Constraints still apply).
+**Spec:** `docs/superpowers/specs/2026-10-19-daqiri-backend-design.md` (sections "100G engine strategy", "Hardware tiers", "{host-a} as a labgrid place", "Host prep", milestone M5). Phase 1 plan: `docs/superpowers/plans/2026-10-19-daqiri-backend-phase1.md` (its Global Constraints still apply).
 
 ## Facts established 2026-10-20 (verify before relying on them)
 
-- picard: Ubuntu 24.04, kernel 7.0.0-38, 36 threads (W-2295, one NUMA node), `intel_iommu=on iommu=pt`, Secure Boot off, 2 MB hugetlbfs mounted at `/dev/hugepages` (root 755, `HugePages_Total: 0`), 1 GB pages supported but unconfigured, CUDA 13.4 at `/usr/local/cuda` (not on PATH), driver 595.99.02, DAQIRI 2026.7.0 at `$HOME/opt/daqiri` built with the socket engine only, rdma-core/libibverbs 50.0 runtime present, **no** `libibverbs-dev`, `rdma-core` (tools), `meson`, `ninja-build`, `libnuma-dev`; apt DPDK candidate is 23.11 (unusable: DAQIRI needs 25.11 + its own patches).
-- ConnectX-5 `enp101s0np0` = `mlx5_0`, PCI `0000:65:00.0`, MAC `e8:eb:d3:fe:22:44`, fw 16.32.1010, `/dev/infiniband/uverbs0` present, MTU 1500, 192.0.2.2/24 (NetworkManager, not netplan). Link is **down whenever the VCU118 is not driving its CMAC** (it flapped with vrt49 JTAG activity today); `nuc` was acquired by `bq/tcollins` at survey time.
+- {host-a}: Ubuntu 24.04, kernel 7.0.0-38, 36 threads (W-2295, one NUMA node), `intel_iommu=on iommu=pt`, Secure Boot off, 2 MB hugetlbfs mounted at `/dev/hugepages` (root 755, `HugePages_Total: 0`), 1 GB pages supported but unconfigured, CUDA 13.4 at `/usr/local/cuda` (not on PATH), driver 595.99.02, DAQIRI 2026.7.0 at `$HOME/opt/daqiri` built with the socket engine only, rdma-core/libibverbs 50.0 runtime present, **no** `libibverbs-dev`, `rdma-core` (tools), `meson`, `ninja-build`, `libnuma-dev`; apt DPDK candidate is 23.11 (unusable: DAQIRI needs 25.11 + its own patches).
+- ConnectX-5 `enp101s0np0` = `mlx5_0`, PCI `0000:65:00.0`, MAC `e8:eb:d3:fe:22:44`, fw 16.32.1010, `/dev/infiniband/uverbs0` present, MTU 1500, 192.0.2.2/24 (NetworkManager, not netplan). Link is **down whenever the VCU118 is not driving its CMAC** (it flapped with vrt49 JTAG activity today); `{host-c}` was acquired by `{host-f}/{user}` at survey time.
 - DAQIRI (pin `7c1f5d05`): DPDK engine builds devargs `dv_flow_en=2` unless the interface has eCPRI flows (`src/engines/dpdk/daqiri_dpdk_engine.cpp:2349`); static UDP flows use the synchronous `rte_flow_create`, the async/template API is only configured when `dynamic_flow_capacity` > 0, so `dv_flow_en=1` is viable for our static flows. The ibverbs engine checks only mlx5dv + DevX + striding RQ. `loopback: "hw"` exists **only** in the ibverbs engine (single port, TX loops into the port's own RX steering, "the NIC must remain enumerated without a link", `eth_dst_addr` = the port's own MAC). `loopback: "sw"` needs no NIC. Raw packets start at the Ethernet header (UDP payload at byte 42); HDS splits a packet at `buf_size` of the queue's first memory region into segment 0/1, read with `get_segment_packet_ptr/length(burst, seg, idx)`. Memory kinds: `host`, `host_pinned`, `huge`, `device`. TX API: `create_tx_burst_params`, `set_header(msg, port, queue, batch, 1)`, `is_tx_burst_available`, `get_tx_packet_burst`, `get_segment_packet_ptr(msg, 0, i)`, `set_packet_lengths(msg, i, {len})`, `send_tx_burst`, `free_all_packets_and_burst_tx`, `wait_for_tx_idle`.
 - vrt49 PR #50 (`feat/vcu118-daq3-vrt49`) defines the VCU118+DAQ3 100G TX project but **produces no bitstream yet**; the framer's network endpoint is set through IIO attrs `v49_udp_dest_mac/dest_ip/dest_port/source_mac/source_ip/source_port/ttl/apply/status`, plus `v49_enable`, `v49_stream_id`, `v49_packet_mtu`; vrt49 CI uses `192.0.2.1 → 192.0.2.2:4991`. So the `100g-vrt` tier cannot pass until vrt49 ships a bitstream (spec risk 6); this plan's hardware gate is the loopback tier.
-- labgrid-plugins: `adi-lg request --part --carrier --mode --run --wait --coord --no-boot --validate --power-down`, `adi-lg setup-runner --scope --name --labels --dir --coord --token --non-interactive`, `reserve_and_acquire(coord, filt, *, wait)` / `release(coord, reservation)` in `adi_lg_plugins/request/reservation.py`, place tags seeded with `exporter_configs/scripts/seed-place-tags.sh --coordinator 10.0.0.41:20408 --manifest exporter_configs/place-tags.home-lab.yaml`. `nuc` tags: `boot-strategy=BootFabric carrier=vcu118 daughter-board=daq3 runner=hw-nuc`. Coordinator `10.0.0.41:20408`; `labgrid-client` lives on nemo (`~/venv_WORKING/bin`), not on picard.
-- infra: playbooks in `~/dev/infra/ansible/playbooks/`, inventory `ansible/inventory/hosts.yml` (picard = 10.0.0.101), run as `ansible-playbook ansible/playbooks/<name>.yml -K` for picard (sudo password), vault at `ansible/inventory/group_vars/all/vault.yml`.
+- labgrid-plugins: `adi-lg request --part --carrier --mode --run --wait --coord --no-boot --validate --power-down`, `adi-lg setup-runner --scope --name --labels --dir --coord --token --non-interactive`, `reserve_and_acquire(coord, filt, *, wait)` / `release(coord, reservation)` in `adi_lg_plugins/request/reservation.py`, place tags seeded with `exporter_configs/scripts/seed-place-tags.sh --coordinator {coordinator} --manifest exporter_configs/place-tags.home-lab.yaml`. `{host-c}` tags: `boot-strategy=BootFabric carrier=vcu118 daughter-board=daq3 runner=hw-{host-c}`. Coordinator `{coordinator}`; `labgrid-client` lives on {host-b} (`{lab-venv}/bin`), not on {host-a}.
+- infra: playbooks in `{infra-repo}/ansible/playbooks/`, inventory `ansible/inventory/hosts.yml` ({host-a} = {host-a-ip}), run as `ansible-playbook ansible/playbooks/<name>.yml -K` for {host-a} (sudo password), vault at `ansible/inventory/group_vars/all/vault.yml`.
 
 ## Global Constraints
 
 - Everything in phase 1's Global Constraints (module/core isolation, only `daqiri-engine.cpp` includes DAQIRI, framing lib DAQIRI-free, `git commit -s`, `format.sh`, no `tfcollins` paths in source).
 - DPDK is pinned to **25.11** with DAQIRI's `dpdk_patches/dmabuf.patch` (`--exclude=.mailmap --exclude='doc/guides/rel_notes/release_26_03.rst'`) and `dpdk.nvidia.patch`; DAQIRI stays at `CI/daqiri/DAQIRI_REF`. Our DAQIRI patch lives in `CI/daqiri/patches/daqiri/` and is applied by `build-daqiri.sh`; it must apply with `git apply --check` against the pin.
 - Build scripts never need root: dev prefix `$HOME/opt/{dpdk,daqiri}`; only the ansible play touches `/opt`, `/etc`, `/dev`, GRUB, sysctl.
-- No picard reboot is required by this plan: hugepages are 2 MB pages set at runtime (`vm.nr_hugepages`), persisted in `/etc/sysctl.d/`; 1 GB pages stay optional and documented.
+- No {host-a} reboot is required by this plan: hugepages are 2 MB pages set at runtime (`vm.nr_hugepages`), persisted in `/etc/sysctl.d/`; 1 GB pages stay optional and documented.
 - Raw-queue packets are validated (Ethernet → optional one VLAN tag → IPv4 IHL 5, no fragments → UDP, lengths consistent) **before** the VRT prologue is parsed; a rejected packet is counted, never parsed.
 - One DAQIRI engine per process, process lifetime, atexit guard: unchanged. `mem=device` stays `-ENOTSUP` (M6). HDS in this phase: both segments host memory.
-- Hardware tests carry ctest label `daqiri-hw` and run only on picard (`ctest -L daqiri-hw` with `DAQIRI_HW_PCI`, `DAQIRI_HW_MAC` set); GitHub-hosted jobs never run them.
+- Hardware tests carry ctest label `daqiri-hw` and run only on {host-a} (`ctest -L daqiri-hw` with `DAQIRI_HW_PCI`, `DAQIRI_HW_MAC` set); GitHub-hosted jobs never run them.
 - Tier harness: every place acquired is released by the same run, readback-verified, and recorded in `cleanup.json`; the launcher exits non-zero if any cleanup leg is false, even when tests pass.
-- `sudoers` additions on picard: none. `ethtool -S` is readable unprivileged; pcap capture is not part of the 100G tier.
+- `sudoers` additions on {host-a}: none. `ethtool -S` is readable unprivileged; pcap capture is not part of the 100G tier.
 
 ## Review Focus
 
@@ -37,37 +41,37 @@
 2. A VLAN-tagged packet must be accepted with the VRT prologue found at byte 46, and a double-tagged (QinQ) packet rejected — pinned in Task 3 (`l2-vlan.bin`, `l2-qinq.bin`).
 3. With HDS, a packet whose segment 0 is shorter than L2 headers + prologue (`split_boundary` misconfigured) must count as malformed, not crash — pinned in Task 4 (`test_vrt_hds_split`, unit test on `dq_vrt_packet_segs`) and Task 6 (`hds_short_split` hardware case).
 4. The DPDK engine must refuse to start on a NIC that needs `dv_flow_en=1` unless the override is set, and must start with it — pinned in Task 7 (`probe-raw` with and without `DAQIRI_MLX5_DV_FLOW_EN=1`, recorded in the tier README).
-5. A tier run interrupted after acquiring `picard-cx5` (SIGTERM, pytest crash) must still release the place — pinned in Task 9 (`test_launcher_cleanup.py`: fake coordinator client, inject a failing test body, assert release called and `cleanup.json` written).
+5. A tier run interrupted after acquiring `{host-a}-cx5` (SIGTERM, pytest crash) must still release the place — pinned in Task 9 (`test_launcher_cleanup.py`: fake coordinator client, inject a failing test body, assert release called and `cleanup.json` written).
 
 ---
 
-### Task 1: picard host prep (ansible) — packages, hugepages, NIC, device permissions
+### Task 1: {host-a} host prep (ansible) — packages, hugepages, NIC, device permissions
 
 **Files:**
-- Create: `~/dev/infra/ansible/playbooks/deploy-daqiri-host.yml`
-- Create: `~/dev/infra/ansible/playbooks/templates/daqiri-hugepages.sysctl.j2`
-- Modify: `~/dev/infra/HOSTS.md` (picard row: DAQIRI host prep summary)
+- Create: `{infra-repo}/ansible/playbooks/deploy-daqiri-host.yml`
+- Create: `{infra-repo}/ansible/playbooks/templates/daqiri-hugepages.sysctl.j2`
+- Modify: `{infra-repo}/HOSTS.md` ({host-a} row: DAQIRI host prep summary)
 - Test: `ansible-playbook --syntax-check`, `--check -K` dry run, then post-apply assertions below
 
 **Interfaces:**
-- Produces on picard: packages `libibverbs-dev rdma-core ibverbs-utils infiniband-diags meson ninja-build libnuma-dev libelf-dev libpcap-dev python3-pyelftools pkg-config`; `vm.nr_hugepages=2048` (4 GB of 2 MB pages) persisted as `/etc/sysctl.d/80-daqiri-hugepages.conf`; `/dev/hugepages` remounted with `gid=<daqiri group>,mode=1770` through a systemd drop-in `/etc/systemd/system/dev-hugepages.mount.d/daqiri.conf` (`[Mount] Options=pagesize=2M,gid=…,mode=1770`, then `daemon-reload` and `systemctl restart dev-hugepages.mount`; no fstab line, systemd owns that mount); udev rule `/etc/udev/rules.d/80-daqiri-infiniband.rules` making `/dev/infiniband/uverbs*` and `rdma_cm` group `daqiri` 0660; group `daqiri` with member `tcollins`; `enp101s0np0` MTU 9000 and `192.0.2.2/24` through the existing NetworkManager connection (`nmcli con mod ... 802-3-ethernet.mtu 9000 ipv4.addresses 192.0.2.2/24 ipv4.method manual`, by device match); `net.core.rmem_max=268435456`, `net.core.netdev_max_backlog=250000` in `/etc/sysctl.d/80-daqiri-net.conf`. GRUB untouched (document the optional 1 GB variant in the play header as a commented block).
+- Produces on {host-a}: packages `libibverbs-dev rdma-core ibverbs-utils infiniband-diags meson ninja-build libnuma-dev libelf-dev libpcap-dev python3-pyelftools pkg-config`; `vm.nr_hugepages=2048` (4 GB of 2 MB pages) persisted as `/etc/sysctl.d/80-daqiri-hugepages.conf`; `/dev/hugepages` remounted with `gid=<daqiri group>,mode=1770` through a systemd drop-in `/etc/systemd/system/dev-hugepages.mount.d/daqiri.conf` (`[Mount] Options=pagesize=2M,gid=…,mode=1770`, then `daemon-reload` and `systemctl restart dev-hugepages.mount`; no fstab line, systemd owns that mount); udev rule `/etc/udev/rules.d/80-daqiri-infiniband.rules` making `/dev/infiniband/uverbs*` and `rdma_cm` group `daqiri` 0660; group `daqiri` with member `{user}`; `enp101s0np0` MTU 9000 and `192.0.2.2/24` through the existing NetworkManager connection (`nmcli con mod ... 802-3-ethernet.mtu 9000 ipv4.addresses 192.0.2.2/24 ipv4.method manual`, by device match); `net.core.rmem_max=268435456`, `net.core.netdev_max_backlog=250000` in `/etc/sysctl.d/80-daqiri-net.conf`. GRUB untouched (document the optional 1 GB variant in the play header as a commented block).
 - Consumed by: Task 2 (build deps), Task 6 (hugepages, uverbs access), Task 9 (MTU 9000).
 
 - [ ] **Step 1: Write the play**
 
-`hosts: picard`, `become: true`, `gather_facts: true`. Tasks in this order: group `daqiri` → add `tcollins` → apt packages → sysctl files (`ansible.posix.sysctl` with `reload: true`) → systemd drop-in for `dev-hugepages.mount` (`Options=pagesize=2M,gid={{ daqiri_gid }},mode=1770`, `daemon_reload`, restart the mount unit) → udev rule + `udevadm trigger --subsystem-match=infiniband_verbs` → nmcli MTU/address (idempotent: read current with `nmcli -g 802-3-ethernet.mtu,ipv4.addresses con show`) → `ip link set enp101s0np0 up` (ok if no carrier). Header comment: purpose, run line `ansible-playbook ansible/playbooks/deploy-daqiri-host.yml -K`, and the optional GRUB 1 GB block.
+`hosts: {host-a}`, `become: true`, `gather_facts: true`. Tasks in this order: group `daqiri` → add `{user}` → apt packages → sysctl files (`ansible.posix.sysctl` with `reload: true`) → systemd drop-in for `dev-hugepages.mount` (`Options=pagesize=2M,gid={{ daqiri_gid }},mode=1770`, `daemon_reload`, restart the mount unit) → udev rule + `udevadm trigger --subsystem-match=infiniband_verbs` → nmcli MTU/address (idempotent: read current with `nmcli -g 802-3-ethernet.mtu,ipv4.addresses con show`) → `ip link set enp101s0np0 up` (ok if no carrier). Header comment: purpose, run line `ansible-playbook ansible/playbooks/deploy-daqiri-host.yml -K`, and the optional GRUB 1 GB block.
 
 - [ ] **Step 2: Syntax and dry run**
 
-Run: `cd ~/dev/infra && ansible-playbook ansible/playbooks/deploy-daqiri-host.yml --syntax-check && ansible-playbook ansible/playbooks/deploy-daqiri-host.yml -K --check --diff -l picard`
+Run: `cd {infra-repo} && ansible-playbook ansible/playbooks/deploy-daqiri-host.yml --syntax-check && ansible-playbook ansible/playbooks/deploy-daqiri-host.yml -K --check --diff -l {host-a}`
 Expected: syntax OK; check mode lists the package, sysctl, mount, udev and nmcli changes with no failures (the sudo password is entered by the user; this step is a manual gate — the executor runs it via `!` if a human is present, otherwise records BLOCKED and continues with Task 3, since Tasks 2, 6, 7, 9 depend on it).
 
 - [ ] **Step 3: Apply (manual gate)**
 
-Run: `cd ~/dev/infra && ansible-playbook ansible/playbooks/deploy-daqiri-host.yml -K`
+Run: `cd {infra-repo} && ansible-playbook ansible/playbooks/deploy-daqiri-host.yml -K`
 Expected: `failed=0`.
 
-- [ ] **Step 4: Verify on picard**
+- [ ] **Step 4: Verify on {host-a}**
 
 Run:
 ```bash
@@ -77,10 +81,10 @@ Expected: `HugePages_Total: 2048`; `root:daqiri 1770`; `crw-rw---- ... root daqi
 
 - [ ] **Step 5: HOSTS.md and commit (infra repo)**
 
-Add to picard's row: "DAQIRI host prep (`deploy-daqiri-host.yml`): group `daqiri` owns `/dev/hugepages` (2 MB, 2048 pages) and `/dev/infiniband/uverbs*`; `enp101s0np0` MTU 9000 192.0.2.2/24; DPDK/DAQIRI dev prefixes `$HOME/opt/{dpdk,daqiri}`; link is down unless the VCU118 drives its CMAC."
+Add to {host-a}'s row: "DAQIRI host prep (`deploy-daqiri-host.yml`): group `daqiri` owns `/dev/hugepages` (2 MB, 2048 pages) and `/dev/infiniband/uverbs*`; `enp101s0np0` MTU 9000 192.0.2.2/24; DPDK/DAQIRI dev prefixes `$HOME/opt/{dpdk,daqiri}`; link is down unless the VCU118 drives its CMAC."
 
 ```bash
-cd ~/dev/infra && git add ansible/playbooks/deploy-daqiri-host.yml ansible/playbooks/templates/daqiri-hugepages.sysctl.j2 HOSTS.md && git commit -s -m "ansible: deploy-daqiri-host: prep picard for DAQIRI raw engines (hugepages, uverbs, NIC)"
+cd {infra-repo} && git add ansible/playbooks/deploy-daqiri-host.yml ansible/playbooks/templates/daqiri-hugepages.sysctl.j2 HOSTS.md && git commit -s -m "ansible: deploy-daqiri-host: prep {host-a} for DAQIRI raw engines (hugepages, uverbs, NIC)"
 ```
 
 ---
@@ -94,7 +98,7 @@ cd ~/dev/infra && git add ansible/playbooks/deploy-daqiri-host.yml ansible/playb
 - Create: `CI/daqiri/probe-raw.cpp` (built by `build-daqiri.sh` into `<prefix>/bin/daqiri-probe-raw`)
 - Modify: `CI/daqiri/Dockerfile` (build stage: `meson ninja-build libnuma-dev libelf-dev python3-pyelftools`; `build-dpdk.sh /opt/dpdk`; `build-daqiri.sh /opt/daqiri "dpdk ibverbs"`; runtime stage copies `/opt/dpdk` too and sets `LD_LIBRARY_PATH`/`PKG_CONFIG_PATH`)
 - Modify: `CI/daqiri/README.md`
-- Test: build on picard; `daqiri-probe-raw` with a `loopback: "sw"` YAML; CI image builds in `daqiri-ci-image.yml`
+- Test: build on {host-a}; `daqiri-probe-raw` with a `loopback: "sw"` YAML; CI image builds in `daqiri-ci-image.yml`
 
 **Interfaces:**
 - Produces: `build-dpdk.sh <prefix>` → DPDK 25.11 patched, `meson setup -Dtests=false -Dplatform=generic -Denable_docs=false -Ddisable_drivers=<DAQIRI's list>`, installed to `<prefix>` (`<prefix>/lib/x86_64-linux-gnu/pkgconfig/libdpdk.pc`). `build-daqiri.sh <prefix> "<engines>" [<dpdk-prefix>]` → DAQIRI with `-DDAQIRI_ENGINE="dpdk ibverbs"` (patched), plus `daqiri-probe-raw`.
@@ -113,7 +117,7 @@ Create the patch with `git -C <daqiri-src> diff` after editing (keep it a single
 
 Single file, links `daqiri::daqiri`; args as in Interfaces; `daqiri::daqiri_init_from_yaml_file`, `daqiri::get_engine_type`-independent output (`dq_yaml_engine_kind` logic is in the module; here print `cfg.common_.engine_type` via `engine_type_to_string`). `build-daqiri.sh` compiles it after installing DAQIRI: `g++ -std=c++17 probe-raw.cpp $(pkg-config --cflags --libs daqiri) -o <prefix>/bin/daqiri-probe-raw`.
 
-- [ ] **Step 4: Build on picard**
+- [ ] **Step 4: Build on {host-a}**
 
 Run:
 ```bash
@@ -296,7 +300,7 @@ Run: `cmake --build build-daqiri --target vrt_sender_raw` → links against `daq
 
 - [ ] **Step 4: Spike A — ibverbs hardware loopback on the ConnectX-5 (two processes)**
 
-Run on picard (after Task 1):
+Run on {host-a} (after Task 1):
 ```bash
 tests/daqiri/render_hw_yaml.sh tests/daqiri/resources/cx5-hw-loopback-ibverbs.yaml.in /tmp/cx5.yaml
 $HOME/opt/daqiri/bin/daqiri-probe-raw /tmp/cx5.yaml --seconds 8 --port loopback_port --queue 0 &
@@ -312,7 +316,7 @@ git add tests/daqiri/vrt_sender_raw.cpp tests/daqiri/vrt_sender_common.h tests/d
 
 ---
 
-### Task 6: Hardware loopback tests on picard (`daqiri-hw`)
+### Task 6: Hardware loopback tests on {host-a} (`daqiri-hw`)
 
 **Files:**
 - Modify: `tests/daqiri/test_vrt_loopback.c` (env `VRT_SENDER_ARGS` prefix, env `DAQIRI_URI_EXTRA`, case selection by `--case`)
@@ -332,10 +336,10 @@ Add `--case <name>` (default all socket cases as today), read `VRT_SENDER_ARGS` 
 
 Each ctest = `run_hw_loopback.sh <case>`; `rate` has `TIMEOUT 180`. `ethtool -S enp101s0np0 | grep -E 'rx_out_of_buffer|rx_packets_phy|rx_discards_phy'` captured before/after into `hw-results.json`.
 
-- [ ] **Step 3: Run on picard**
+- [ ] **Step 3: Run on {host-a}**
 
 Run: `cmake -S . -B build-daqiri -DDAQIRI_HW_PCI=0000:65:00.0 … && ctest --test-dir build-daqiri -L daqiri-hw --output-on-failure | tail -14`
-Expected: 10/10 passed; `rate` reports ≥ 20 Gbps payload (single RX core, host memory; record the number in the README as the picard baseline).
+Expected: 10/10 passed; `rate` reports ≥ 20 Gbps payload (single RX core, host memory; record the number in the README as the {host-a} baseline).
 
 - [ ] **Step 4: Commit**
 
@@ -370,7 +374,7 @@ Expected: buffer opens, the buffer attr `daqiri_engine_kind` reads `dpdk`, deque
 
 - [ ] **Step 4: Decision**
 
-Write `tests/hardware/daqiri/README.md` "Engine decision (picard-cx5, 2026-10-xx)": ibverbs = default for the tier (loopback-testable today, no patch); DPDK = validated at init/flow level with `DAQIRI_MLX5_DV_FLOW_EN=1`, data-path validation deferred until the VCU118 framer streams; socket = fallback. Include the exact probe outputs.
+Write `tests/hardware/daqiri/README.md` "Engine decision ({host-a}-cx5, 2026-10-xx)": ibverbs = default for the tier (loopback-testable today, no patch); DPDK = validated at init/flow level with `DAQIRI_MLX5_DV_FLOW_EN=1`, data-path validation deferred until the VCU118 framer streams; socket = fallback. Include the exact probe outputs.
 
 - [ ] **Step 5: Bench NIC stats + commit**
 
@@ -381,45 +385,45 @@ git add tests/daqiri/resources/cx5-dpdk-rx.yaml.in utils/iio_daqiri_bench.c man/
 
 ---
 
-### Task 8: picard as labgrid place `picard-cx5` (exporter, tags, runner)
+### Task 8: {host-a} as labgrid place `{host-a}-cx5` (exporter, tags, runner)
 
 **Files (labgrid-plugins repo):**
 - Create: `examples/lg_picard_cx5_exporter.yaml`
-- Modify: `exporter_configs/place-tags.home-lab.yaml` (`picard-cx5` entry; add `exporter-address`/`exporter-hostname` to `nuc` and `tron`)
+- Modify: `exporter_configs/place-tags.home-lab.yaml` (`{host-a}-cx5` entry; add `exporter-address`/`exporter-hostname` to `{host-c}` and `{host-d}`)
 - Modify: `docs/` page listing home-lab places (the one `seed-place-tags.sh` header points at)
 **Files (infra repo):**
-- Create: `ansible/playbooks/deploy-labgrid-exporter-picard.yml` (venv `~/labgrid/venv` with labgrid 26.0 + `labgrid-plugins` pinned to the current main SHA, user unit `labgrid-exporter.service`, `loginctl enable-linger tcollins`; no sudo except linger)
-- Modify: `HOSTS.md` (`picard-cx5` row in the rigs table)
+- Create: `ansible/playbooks/deploy-labgrid-exporter-{host-a}.yml` (venv `~/labgrid/venv` with labgrid 26.0 + `labgrid-plugins` pinned to the current main SHA, user unit `labgrid-exporter.service`, `loginctl enable-linger {user}`; no sudo except linger)
+- Modify: `HOSTS.md` (`{host-a}-cx5` row in the rigs table)
 
 **Interfaces:**
-- Exporter YAML: group `cx5` with `NetworkInterface` (`cls: NetworkInterface`, `ifname: enp101s0np0`) and `NetworkService` (`address: 10.0.0.101`, `username: tcollins`); run as `labgrid-exporter -c 10.0.0.41:20408 -n picard --hostname 10.0.0.101 ~/labgrid/lg_picard_cx5_exporter.yaml`.
-- Place `picard-cx5`: match `picard/cx5/*`; tags `nic=connectx5 speed=100g peer=nuc pci=0000:65:00.0 driver=mlx5_core link-address=192.0.2.2/24 mtu=9000 runner=hw-picard exporter-address=10.0.0.101 exporter-hostname=picard`.
-- Runner: `adi-lg setup-runner --scope repo:tfcollins/libiio --name picard-libiio --labels hw-picard --dir ~/actions-runner-libiio --non-interactive` (user unit `actions-runner-libiio.service`).
+- Exporter YAML: group `cx5` with `NetworkInterface` (`cls: NetworkInterface`, `ifname: enp101s0np0`) and `NetworkService` (`address: {host-a-ip}`, `username: {user}`); run as `labgrid-exporter -c {coordinator} -n {host-a} --hostname {host-a-ip} ~/labgrid/lg_picard_cx5_exporter.yaml`.
+- Place `{host-a}-cx5`: match `{host-a}/cx5/*`; tags `nic=connectx5 speed=100g peer={host-c} pci=0000:65:00.0 driver=mlx5_core link-address=192.0.2.2/24 mtu=9000 runner=hw-{host-a} exporter-address={host-a-ip} exporter-hostname={host-a}`.
+- Runner: `adi-lg setup-runner --scope repo:tfcollins/libiio --name {host-a}-libiio --labels hw-{host-a} --dir ~/actions-runner-libiio --non-interactive` (user unit `actions-runner-libiio.service`).
 
 - [ ] **Step 1: Exporter config + play; deploy**
 
-Run: `cd ~/dev/infra && ansible-playbook ansible/playbooks/deploy-labgrid-exporter-picard.yml -K` (linger needs sudo; everything else user-level).
-Expected: `systemctl --user status labgrid-exporter` active on picard.
+Run: `cd {infra-repo} && ansible-playbook ansible/playbooks/deploy-labgrid-exporter-{host-a}.yml -K` (linger needs sudo; everything else user-level).
+Expected: `systemctl --user status labgrid-exporter` active on {host-a}.
 
-- [ ] **Step 2: Create the place and tags on the coordinator (from nemo)**
+- [ ] **Step 2: Create the place and tags on the coordinator (from {host-b})**
 
-Run: `ssh nemo.local 'export LG_COORDINATOR=10.0.0.41:20408; C=~/venv_WORKING/bin/labgrid-client; $C -p picard-cx5 create; $C -p picard-cx5 add-match "picard/cx5/*"; $C -p picard-cx5 show'`, then seed tags with `seed-place-tags.sh` after editing the manifest.
+Run: `ssh {host-b}.local 'export LG_COORDINATOR={coordinator}; C={lab-venv}/bin/labgrid-client; $C -p {host-a}-cx5 create; $C -p {host-a}-cx5 add-match "{host-a}/cx5/*"; $C -p {host-a}-cx5 show'`, then seed tags with `seed-place-tags.sh` after editing the manifest.
 Expected: `show` lists `NetworkInterface` and `NetworkService` resources and the tags.
 
 - [ ] **Step 3: Acquire/release cycle**
 
-Run (nemo): `$C -p picard-cx5 acquire && $C -p picard-cx5 show | grep acquired && $C -p picard-cx5 release && $C -p picard-cx5 show | grep 'acquired: None'`
+Run ({host-b}): `$C -p {host-a}-cx5 acquire && $C -p {host-a}-cx5 show | grep acquired && $C -p {host-a}-cx5 release && $C -p {host-a}-cx5 show | grep 'acquired: None'`
 Expected: both lines.
 
 - [ ] **Step 4: Runner (manual gate: needs a token with repo admin)**
 
-Run on picard: the `adi-lg setup-runner` line above with `--token "$(gh auth token)"`; verify `gh api repos/tfcollins/libiio/actions/runners --jq '.runners[].labels[].name' | grep hw-picard`.
+Run on {host-a}: the `adi-lg setup-runner` line above with `--token "$(gh auth token)"`; verify `gh api repos/tfcollins/libiio/actions/runners --jq '.runners[].labels[].name' | grep hw-{host-a}`.
 
 - [ ] **Step 5: Commits (two repos)**
 
 ```bash
-cd ~/dev/labgrid-plugins && git add examples/lg_picard_cx5_exporter.yaml exporter_configs/place-tags.home-lab.yaml docs && git commit -s -m "exporter: add picard-cx5 (ConnectX-5 100G receiver) place"
-cd ~/dev/infra && git add ansible/playbooks/deploy-labgrid-exporter-picard.yml HOSTS.md && git commit -s -m "ansible: labgrid exporter on picard for place picard-cx5"
+cd {lab-plugins-repo} && git add examples/lg_picard_cx5_exporter.yaml exporter_configs/place-tags.home-lab.yaml docs && git commit -s -m "exporter: add {host-a}-cx5 (ConnectX-5 100G receiver) place"
+cd {infra-repo} && git add ansible/playbooks/deploy-labgrid-exporter-{host-a}.yml HOSTS.md && git commit -s -m "ansible: labgrid exporter on {host-a} for place {host-a}-cx5"
 ```
 
 ---
@@ -430,12 +434,12 @@ cd ~/dev/infra && git add ansible/playbooks/deploy-labgrid-exporter-picard.yml H
 - Create: `tests/hardware/daqiri/{requirements.txt,pytest.ini,launcher.py,conftest.py,receiver.py,perf.py,test_common.py,test_tier_vrt_100g.py,test_launcher_cleanup.py}`
 - Modify: `tests/hardware/daqiri/README.md`
 - Create: `.github/workflows/daqiri-hil.yml`
-- Create: `tests/hardware/daqiri/baselines/picard-cx5-loopback.json`
+- Create: `tests/hardware/daqiri/baselines/{host-a}-cx5-loopback.json`
 
 **Interfaces:**
-- `launcher.py --tier {100g-loopback,100g-vrt} --build <abs> --evidence <abs> [--duration 60] [--coord 10.0.0.41:20408] [--wait 600]`: preflight (venv pins, `libiio-daqiri.so` sha256, coordinator reachable, `picard-cx5` tags validated incl. `exporter-address` present and `exporter-hostname` not a bare name, `daqiri-probe-raw` init OK on the rendered YAML) → acquire `picard-cx5` via `reserve_and_acquire(coord, {"nic": "connectx5"}, wait=...)` → for `100g-vrt` also `adi-lg request --part daq3 --carrier vcu118 --mode reserve --wait <s> --run "pytest …"` (the board leg; sets `v49_udp_*` on the framer, `v49_enable=1`) → tier tests with `--junitxml` → `perf.json` → cleanup legs each with its own timeout (`v49_enable=0` when a board was used, release `picard-cx5`, readback `acquired: None`) → `cleanup.json`; non-zero exit if any leg false.
+- `launcher.py --tier {100g-loopback,100g-vrt} --build <abs> --evidence <abs> [--duration 60] [--coord {coordinator}] [--wait 600]`: preflight (venv pins, `libiio-daqiri.so` sha256, coordinator reachable, `{host-a}-cx5` tags validated incl. `exporter-address` present and `exporter-hostname` not a bare name, `daqiri-probe-raw` init OK on the rendered YAML) → acquire `{host-a}-cx5` via `reserve_and_acquire(coord, {"nic": "connectx5"}, wait=...)` → for `100g-vrt` also `adi-lg request --part daq3 --carrier vcu118 --mode reserve --wait <s> --run "pytest …"` (the board leg; sets `v49_udp_*` on the framer, `v49_enable=1`) → tier tests with `--junitxml` → `perf.json` → cleanup legs each with its own timeout (`v49_enable=0` when a board was used, release `{host-a}-cx5`, readback `acquired: None`) → `cleanup.json`; non-zero exit if any leg false.
 - `test_tier_vrt_100g.py`: tier `100g-loopback` runs the Task 6 cases through `run_hw_loopback.sh` plus `rate` for `--duration` seconds with `receiver.py`'s NIC gate (`rx_out_of_buffer` delta 0); tier `100g-vrt` requires `v49_udp_status` streaming and fails (not skips) otherwise, then ramp continuity 60 s, zero loss.
-- `daqiri-hil.yml`: `workflow_dispatch` (tier, duration, ref) + nightly 04:00 UTC, `concurrency: daqiri-hil`, job `hil` on `[self-hosted, hw-picard]`, `timeout-minutes: 60`, `continue-on-error: true`, "require non-skipping JUnit evidence" step, artifacts upload.
+- `daqiri-hil.yml`: `workflow_dispatch` (tier, duration, ref) + nightly 04:00 UTC, `concurrency: daqiri-hil`, job `hil` on `[self-hosted, hw-{host-a}]`, `timeout-minutes: 60`, `continue-on-error: true`, "require non-skipping JUnit evidence" step, artifacts upload.
 
 - [ ] **Step 1: Failing cleanup test**
 
@@ -443,10 +447,10 @@ cd ~/dev/infra && git add ansible/playbooks/deploy-labgrid-exporter-picard.yml H
 
 - [ ] **Step 2: Implement `launcher.py` and friends; pass the test**
 
-- [ ] **Step 3: Loopback tier end to end on picard**
+- [ ] **Step 3: Loopback tier end to end on {host-a}**
 
 Run: `python3 tests/hardware/daqiri/launcher.py --tier 100g-loopback --build $PWD/build-daqiri --evidence /tmp/ev --duration 60`
-Expected: junit all pass, `cleanup.json` all true, coordinator shows `picard-cx5` free, `perf.json` written; copy as `baselines/picard-cx5-loopback.json`.
+Expected: junit all pass, `cleanup.json` all true, coordinator shows `{host-a}-cx5` free, `perf.json` written; copy as `baselines/{host-a}-cx5-loopback.json`.
 
 - [ ] **Step 4: Workflow dispatch**
 
@@ -483,6 +487,6 @@ git add doc/source/daqiri-backend.md README_BUILD.md tests/daqiri/README.md test
 ## Verification (whole plan)
 
 - Software (any host, CI image): `ctest -L '^daqiri$'` (now incl. `test_l2_parse`, `test_vrt_hds_split`), `ctest -L daqiri-loopback`, `api` via the daqiri URI, `symbol_map`; `daqiri.yml` green.
-- picard: `ctest -L daqiri-hw` 10/10; `daqiri-probe-raw` DPDK init OK with the override; `launcher.py --tier 100g-loopback` green with `cleanup.json` all true and the place free afterwards.
-- Lab state: `labgrid-client -p picard-cx5 show` lists the NIC resource and tags; `hw-picard` runner online for `tfcollins/libiio`.
+- {host-a}: `ctest -L daqiri-hw` 10/10; `daqiri-probe-raw` DPDK init OK with the override; `launcher.py --tier 100g-loopback` green with `cleanup.json` all true and the place free afterwards.
+- Lab state: `labgrid-client -p {host-a}-cx5 show` lists the NIC resource and tags; `hw-{host-a}` runner online for `tfcollins/libiio`.
 - Deferred to vrt49: `100g-vrt` tier (needs the VCU118+DAQ3 bitstream from PR #50); DPDK data path at line rate; M6 `mem=device` through HDS segment 1.

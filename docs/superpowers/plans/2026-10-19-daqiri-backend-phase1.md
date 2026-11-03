@@ -1,5 +1,9 @@
 # DAQIRI backend phase 1 (software) Implementation Plan
 
+> Lab host names, addresses and local paths in this document are placeholders
+> (`{host-a}`, `{coordinator}`, ...). The mapping lives in a local, untracked
+> `HOSTS.md` at the repository root (ignored by `.gitignore`).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A loadable `libiio-daqiri.so` that streams from unchanged iiod boards (`framing=iiod`) and from VITA 49.2 UDP senders through the DAQIRI socket engine (`framing=vrt`), with loss accounting, unit tests, loopback tests and a CUDA-capable CI job.
@@ -33,7 +37,7 @@
 
 ---
 
-### Task 1: DAQIRI dev build on picard and pinned reference
+### Task 1: DAQIRI dev build on {host-a} and pinned reference
 
 **Files:**
 - Create: `CI/daqiri/DAQIRI_REF` (one line: 40-char SHA)
@@ -52,7 +56,7 @@ Expected: a 40-char hex SHA.
 
 POSIX sh, `set -eu`; args `prefix` (required, absolute), `engines` (optional, default ""); clone to `${TMPDIR:-/tmp}/daqiri-src-$REF` if absent, `git -C ... checkout $REF`, `git submodule update --init --recursive`, cmake configure/build/install with `-j$(nproc)`; print `pkg-config --modversion daqiri` using `PKG_CONFIG_PATH=$prefix/lib/pkgconfig` at the end.
 
-- [ ] **Step 3: Build on picard into a user prefix**
+- [ ] **Step 3: Build on {host-a} into a user prefix**
 
 Run: `CI/daqiri/build-daqiri.sh $HOME/opt/daqiri`
 Expected: last line prints `2026.7.0` (or the version in `VERSION`); `ls $HOME/opt/daqiri/lib/cmake/daqiri/daqiriConfig.cmake` exists. Note the CUDA toolkit is found at `/usr/local/cuda-13.4`; if CMake cannot find it, pass `-DCUDAToolkit_ROOT=/usr/local/cuda-13.4` through an env var `DAQIRI_CMAKE_EXTRA` that the script appends.
@@ -199,7 +203,7 @@ Run: `cmake --build build && ctest --test-dir build -R test_vrt_prologue` → Ex
 
 Run: `ctest --test-dir build -R test_vrt_prologue --output-on-failure` → PASS.
 
-- [ ] **Step 6: Optional parity check against libvrt49** (only if `~/dev/vrt49/build/libvrt49.so` exists): `gen_golden.py --check-with-libvrt49 <path>` round-trips each vector through `vrt49_prologue_unpack` via ctypes and asserts equality; record the result in `tests/daqiri/README.md`.
+- [ ] **Step 6: Optional parity check against libvrt49** (only if `{vrt49-checkout}/build/libvrt49.so` exists): `gen_golden.py --check-with-libvrt49 <path>` round-trips each vector through `vrt49_prologue_unpack` via ctypes and asserts equality; record the result in `tests/daqiri/README.md`.
 
 - [ ] **Step 7: Commit**
 
@@ -321,7 +325,7 @@ Run: `build/utils/iio_readdev -u 'daqiri:127.0.0.1,framing=iiod' -b 4096 -s 8192
 
 - [ ] **Step 8: ASCII-peer gate (manual, needs a Kuiper board; record result in `tests/daqiri/README.md`)**
 
-Run against any reachable Kuiper board (e.g. the `nemo` place's ZC706 when free): `iio_readdev -u "daqiri:<board-ip>,framing=iiod" -s 4096 <adc-device> | cmp - <(iio_readdev -u ip:<board-ip> -s 4096 <adc-device>)`... streams are not aligned; instead assert both produce 4096 samples × sample size bytes and exit 0. Expected: works through the ASCII `readbuf` path (v0.25 iiod). If no board is free, leave the checkbox unticked and note it.
+Run against any reachable Kuiper board (e.g. the `{host-b}` place's ZC706 when free): `iio_readdev -u "daqiri:<board-ip>,framing=iiod" -s 4096 <adc-device> | cmp - <(iio_readdev -u ip:<board-ip> -s 4096 <adc-device>)`... streams are not aligned; instead assert both produce 4096 samples × sample size bytes and exit 0. Expected: works through the ASCII `readbuf` path (v0.25 iiod). If no board is free, leave the checkbox unticked and note it.
 
 ---
 
