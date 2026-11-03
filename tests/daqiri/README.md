@@ -168,8 +168,8 @@ mode never swaps. `iio_daqiri_bench --check ramp` uses the same definition.
 
 ## Manual gate: a Kuiper board with ASCII-only `iiod`
 
-Boards that ship libiio 0.25 (Kuiper 2023_R2_P1) run an `iiod` that speaks only
-the ASCII protocol. No CI job has one; run this once per change to the TCP data
+Boards that ship libiio 0.x (0.26 on Kuiper 2023_R2_P1) run an `iiod` that speaks
+only the ASCII protocol. No CI job has one; run this once per change to the TCP data
 path (`data=tcp`), with a board on the network:
 
 - [ ] `iio_info -u daqiri:<board>,data=tcp` shows the same devices and
@@ -197,8 +197,7 @@ All five items passed at `6943650b`.
 - Kuiper 11.2 (bullseye) userland.
 
 Its `iiod` is libiio **0.26** (`5e1e9cb`) and speaks only the ASCII protocol: `BINARY` is
-answered `-22`, and `VERSION` answers `0.26.5e1e9cb`. This board ships 0.26, not the 0.25 named
-above.
+answered `-22`, and `VERSION` answers `0.26.5e1e9cb`.
 
 **Adapted to the board.** Device `axi-adrv9002-rx-lpc`, channels `voltage0_i voltage0_q`
 (15.36 MSPS). For items 2 to 5, RX1 was put in the ADRV9002's SSI fixed test pattern through the
