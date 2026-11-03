@@ -384,7 +384,10 @@ static unsigned int counters_find(const struct iio_buffer *buf, struct counter *
 		memset(&cs[n], 0, sizeof(cs[n]));
 		cs[n].attr = attr;
 		cs[n].name = name;
-		cs[n].delta = has_prefix(name, "daqiri_rx_") || has_prefix(name, "daqiri_blocks_");
+		/* daqiri_rx_socket_buffer is a size, not a count */
+		cs[n].delta = (has_prefix(name, "daqiri_rx_") ||
+					      has_prefix(name, "daqiri_blocks_")) &&
+			      strcmp(name, "daqiri_rx_socket_buffer");
 		n++;
 	}
 

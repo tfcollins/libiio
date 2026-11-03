@@ -171,6 +171,8 @@ static int dq_opts_set(struct dq_opts *o, const char *key, const char *val)
 			o->poll_us = (unsigned)num;
 		return ret;
 	}
+	if (!strcmp(key, "rcvbuf"))
+		return dq_parse_int(val, &o->rcvbuf);
 
 	return -EINVAL;
 }
@@ -188,6 +190,7 @@ int dq_opts_parse(struct dq_opts *o, const char *list, const struct iio_context_
 	 * 200 us keeps the worst-case idle latency well below the engine's
 	 * 64-packet queue at 1G rates */
 	o->poll_us = 200;
+	o->rcvbuf = -1;
 
 	if (env && dq_copy_str(o->yaml, sizeof(o->yaml), env)) {
 		prm_err(p, "daqiri: IIO_DAQIRI_YAML is longer than %zu bytes\n",

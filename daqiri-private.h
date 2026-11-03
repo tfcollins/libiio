@@ -45,6 +45,9 @@ struct dq_opts {
 	uint32_t udp_dst; /* host order; 0: not given */
 	uint16_t data_port;
 	unsigned poll_us;
+	/* Receive buffer of a socket engine queue's socket, in bytes: -1 sizes
+	 * it from the YAML, 0 leaves the kernel's default */
+	int rcvbuf;
 };
 
 /* <list> is the text after the first ',' of the URI, or NULL. Applies the
@@ -173,6 +176,7 @@ int dq_yaml_udp_endpoint(const char *yaml, const char *iface, int queue_id, uint
 /* What one packet of a receive queue can be; 0 where unknown */
 struct dq_rxq_limits {
 	size_t buf_size;  /* bytes of one packet buffer, both regions with header-data split */
+	size_t num_bufs;  /* packet buffers of the queue (of its smallest region) */
 	unsigned int mtu; /* IP MTU of the network interface (raw: of the PCI device) */
 	unsigned int max_udp_payload; /* socket engine: max_payload_size */
 	bool raw;		      /* a buffer holds the whole Ethernet frame */
@@ -187,6 +191,27 @@ int dq_engine_rx_limits(struct dq_engine *e, int port_id, int queue_id, struct d
  * (RoCE, TCP, RDMA, a raw queue with more than two regions). */
 int dq_rxq_open(struct dq_engine *e, int port_id, int queue_id, struct dq_rxq **out);
 void dq_rxq_close(struct dq_rxq *q);
+
+/*
+ * The receive buffer of a socket engine UDP queue's socket, <bytes> asked
+ * for, through DAQIRI: socket_get_server_conn_id() for the YAML's local_addr,
+ * then socket_setsockopt() with SO_RCVBUFFORCE when <force> (which needs
+ * CAP_NET_ADMIN), else SO_RCVBUF (which the kernel caps at
+ * net.core.rmem_max). -ENOTSUP for a queue with no socket of its own (raw
+ * engines), -ENOENT when DAQIRI has no server socket for local_addr, -EIO
+ * when setsockopt() failed (DAQIRI logs why), -ESHUTDOWN once the process
+ * exits.
+ */
+int dq_rxq_set_rcvbuf(struct dq_rxq *q, int bytes, bool force);
+
+/*
+ * What the kernel made of it (getsockopt(SO_RCVBUF): twice what was granted).
+ * DAQIRI has no getsockopt, so the socket is found among this process's file
+ * descriptors: the one IPv4 UDP socket bound to local_addr (and connected to
+ * remote_addr when the YAML has one). -ENOENT when none or more than one is,
+ * -ENOTSUP as above.
+ */
+int dq_rxq_get_rcvbuf(struct dq_rxq *q, int *bytes);
 
 struct dq_pkt {
 	const uint8_t *data; /* segment 0: whole packet (single segment) or headers (HDS) */

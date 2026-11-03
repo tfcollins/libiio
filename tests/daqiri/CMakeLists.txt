@@ -242,8 +242,8 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
         # a sample file of 4099 letters and digits, no whole number of
         # samples, blocks or payloads, whose 1456-byte payloads all differ
         # (the stock file repeats itself, so a block would not tell which
-        # datagram it holds), received with 1456-byte payloads, of which the
-        # kernel's default receive buffer holds some 90
+        # datagram it holds), received with 1456-byte payloads, of which even
+        # the kernel's default receive buffer (rcvbuf=0) holds some 90
         set(UDP_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/udp-loopback)
         string(
             RANDOM
@@ -272,8 +272,20 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                 test_udp_loopback ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh
                 ${UDP_FIXTURE}/fmcomms2.xml
                 ${UDP_FIXTURE}/cf-ad9361-lpc_buf0.bin ${UDP_LOOPBACK_ORACLE})
+        # A burst into a buffer that is open but not enabled, with the
+        # receive buffer the backend asks for by default: nothing lost. Where
+        # net.core.rmem_max does not grant enough, it exits 77, which ctest
+        # reports as skipped. (The burst_kernel_default case above shows the
+        # same burst losing datagrams with rcvbuf=0.)
+        add_test(
+            NAME daqiri_udp_rcvbuf_burst
+            COMMAND
+                test_udp_loopback ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh
+                ${UDP_FIXTURE}/fmcomms2.xml
+                ${UDP_FIXTURE}/cf-ad9361-lpc_buf0.bin ${UDP_LOOPBACK_ORACLE}
+                burst_sized)
         set_tests_properties(
-            daqiri_udp_loopback
+            daqiri_udp_loopback daqiri_udp_rcvbuf_burst
             PROPERTIES
                 LABELS
                 daqiri-loopback
@@ -283,6 +295,8 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
                 "iiod-emu-30431;daqiri-udp-25101"
                 TIMEOUT
                 120)
+        set_tests_properties(daqiri_udp_rcvbuf_burst PROPERTIES SKIP_RETURN_CODE
+                                                                77)
 
         # The same device and mask through data=tcp and data=udp: the same
         # bytes, the sample file repeated

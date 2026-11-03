@@ -21,8 +21,10 @@
  *
  * Every case runs against an emulator of its own, which with_emu.sh starts
  * with the case's flags and --udp-json <oracle.json>. Without --case this
- * program is the driver that runs every case that way:
- *   test_udp_loopback <with_emu.sh> <xml> <sample.bin> <oracle.json>
+ * program is the driver that runs every case that way, or the cases named
+ * (burst_sized only when named; it exits 77, skipped, where the kernel does
+ * not grant the receive buffer it needs):
+ *   test_udp_loopback <with_emu.sh> <xml> <sample.bin> <oracle.json> [<case>...]
  *   test_udp_loopback --case <name> <sample.bin> <oracle.json>
  *
  * Nothing is left to timing. The emulator ends the stream of an enable by
@@ -33,10 +35,10 @@
  * again), enables, waits for the oracle, dequeues exactly the blocks that the
  * emulator's order of emission gives under the host's rules, waits until the
  * backend has seen every datagram sent, and only then disables: nothing is in
- * flight at DISABLE. A count stays below what the kernel's default receive
- * buffer holds of these datagrams (some 90), so even a receive thread that
- * runs late loses none, and every run is paced (--udp-pps 250) besides. The
- * checks:
+ * flight at DISABLE. A count stays below what even the kernel's default
+ * receive buffer (rcvbuf=0) holds of these datagrams (some 90), let alone the
+ * 4 MiB the backend asks for, so a receive thread that runs late loses none,
+ * and every run is paced (--udp-pps 250) besides. The checks:
  * - the oracle is the model's: sent, dropped, reordered, duplicated;
  * - every datagram sent arrived: rx_packets + late + duplicates == sent;
  * - late == reordered, duplicates == duplicated;
@@ -45,6 +47,9 @@
  *   or dropped, the trailing drops are the rest;
  * - the blocks, byte for byte: a gap fails one block with lossy=0 and
  *   zero-fills one block per lost datagram with lossy=1, exactly.
+ *
+ * The rcvbuf_* and burst_* cases check the engine socket's receive buffer
+ * instead (see rcvbuf_default below); they never enable the buffer.
  */
 
 #include <arpa/inet.h>
@@ -535,10 +540,15 @@ static void lb_close(void)
 	memset(&lb, 0, sizeof(lb));
 }
 
+/* Where the context of the next lb_open() logs its warnings and errors;
+ * NULL: stderr */
+static FILE *lb_log;
+
 /* Context with <extra> URI options, buffer with NB_BLOCKS blocks */
 static int lb_open(const char *extra)
 {
 	static const char *const chans[] = { "voltage0", "voltage1" };
+	struct iio_context_params params = { .err = lb_log };
 	const struct iio_device *dev;
 	struct iio_channel *chn;
 	struct iio_block *block;
@@ -549,7 +559,7 @@ static int lb_open(const char *extra)
 	memset(&lb, 0, sizeof(lb));
 
 	snprintf(uri, sizeof(uri), "daqiri:127.0.0.1,data=udp,yaml=%s%s", yaml, extra);
-	lb.ctx = iio_create_context(NULL, uri);
+	lb.ctx = iio_create_context(&params, uri);
 	ret = iio_err(lb.ctx);
 	if (ret) {
 		printf("  %s: unable to create context: %d\n", uri, ret);
@@ -1202,11 +1212,308 @@ TEST_FUNCTION(burst_gap)
 	check_streams(2);
 }
 
+/*
+ * The receive buffer of the engine's socket (daqiri_rx_socket_buffer), which
+ * the backend sizes when it opens the buffer. The kernel doubles what it is
+ * asked for, after capping it at net.core.rmem_max unless the process may
+ * force it (CAP_NET_ADMIN: SO_RCVBUFFORCE), and never goes below
+ * SOCK_MIN_RCVBUF. Every case runs in a process, and so on an engine socket,
+ * of its own: what an earlier open asked for does not carry over.
+ */
+
+/* SOCK_MIN_RCVBUF on 64-bit hosts: 2 * (2048 + the aligned struct sk_buff) */
+#define KERNEL_MIN_RCVBUF 4608
+
+/* The default for socket-udp-loopback-1472.yaml: 256 x 2048 is below 4 MiB */
+#define DEFAULT_RCVBUF (4LL << 20)
+
+/* A whole number from /proc/sys, or -1 */
+static long long proc_ll(const char *path)
+{
+	long long val = -1;
+	FILE *f = fopen(path, "r");
+
+	if (!f)
+		return -1;
+	if (fscanf(f, "%lld", &val) != 1)
+		val = -1;
+	fclose(f);
+
+	return val;
+}
+
+/* The process may force a receive buffer past net.core.rmem_max */
+static bool cap_net_admin(void)
+{
+	unsigned long long caps = 0;
+	char line[256];
+	bool found = false;
+	FILE *f = fopen("/proc/self/status", "r");
+
+	if (!f)
+		return false;
+	while (!found && fgets(line, sizeof(line), f))
+		found = sscanf(line, "CapEff: %llx", &caps) == 1;
+	fclose(f);
+
+	return found && (caps >> 12 & 1); /* CAP_NET_ADMIN */
+}
+
+/* What the kernel makes of <asked> bytes */
+static long long rcvbuf_effective(long long asked)
+{
+	long long rmem_max = proc_ll("/proc/sys/net/core/rmem_max");
+	long long val = asked;
+
+	if (!cap_net_admin() && rmem_max >= 0 && val > rmem_max)
+		val = rmem_max;
+	if (val > 0x7fffffffLL / 2)
+		val = 0x7fffffffLL / 2;
+
+	return val * 2 > KERNEL_MIN_RCVBUF ? val * 2 : KERNEL_MIN_RCVBUF;
+}
+
+/* Open the buffer with <extra>, read daqiri_rx_socket_buffer; -1, failing
+ * the case, when the buffer did not open or has no such number */
+static long long rcvbuf_open(const char *extra)
+{
+	long long val;
+	int ret = lb_open(extra);
+
+	CHECK_EQ(ret, 0, "data=udp buffer opened");
+	if (ret)
+		return -1;
+	TEST_ASSERT_STR_EQ(attr_str("daqiri_data_path"), "udp", "data path");
+	printf("  %s: daqiri_rx_socket_buffer %s (net.core.rmem_max %lld, rmem_default %lld%s)\n",
+			extra[0] ? extra + 1 : "no rcvbuf=", attr_str("daqiri_rx_socket_buffer"),
+			proc_ll("/proc/sys/net/core/rmem_max"),
+			proc_ll("/proc/sys/net/core/rmem_default"),
+			cap_net_admin() ? ", CAP_NET_ADMIN" : "");
+
+	val = attr_ll("daqiri_rx_socket_buffer");
+	TEST_ASSERT(val >= 0, "daqiri_rx_socket_buffer read as a number");
+
+	return val;
+}
+
+/* Without rcvbuf=: num_bufs * buf_size, at least 4 MiB */
+TEST_FUNCTION(rcvbuf_default)
+{
+	long long got = rcvbuf_open("");
+
+	TEST_ASSERT(got >= KERNEL_MIN_RCVBUF, "at least the kernel's minimum");
+	CHECK_EQ(got, rcvbuf_effective(DEFAULT_RCVBUF), "4 MiB, as the kernel grants it");
+}
+
+/* Without rcvbuf=, a YAML whose packet buffers take more than 4 MiB:
+ * socket-udp-loopback-9m.yaml, next to the usual one, 4608 x 2048 */
+TEST_FUNCTION(rcvbuf_from_yaml)
+{
+	static char path[4096];
+	const char *slash = strrchr(yaml, '/');
+	long long got;
+
+	snprintf(path, sizeof(path), "%.*ssocket-udp-loopback-9m.yaml",
+			slash ? (int)(slash - yaml + 1) : 0, yaml);
+	yaml = path;
+
+	got = rcvbuf_open("");
+	CHECK_EQ(got, rcvbuf_effective(4608LL * 2048),
+			"num_bufs * buf_size, as the kernel grants it");
+}
+
+/* rcvbuf=0: the socket keeps the kernel's default */
+TEST_FUNCTION(rcvbuf_zero)
+{
+	long long got = rcvbuf_open(",rcvbuf=0");
+
+	TEST_ASSERT(got >= KERNEL_MIN_RCVBUF, "at least the kernel's minimum");
+	CHECK_EQ(got, proc_ll("/proc/sys/net/core/rmem_default"), "net.core.rmem_default");
+}
+
+/* rcvbuf=N: N, as the kernel grants it */
+TEST_FUNCTION(rcvbuf_set)
+{
+	long long got = rcvbuf_open(",rcvbuf=1000000");
+
+	TEST_ASSERT(got >= KERNEL_MIN_RCVBUF, "at least the kernel's minimum");
+	CHECK_EQ(got, rcvbuf_effective(1000000), "1000000 bytes, as the kernel grants it");
+}
+
+/* More than the kernel grants: a warning that names net.core.rmem_max and
+ * rcvbuf=, and the buffer opens all the same. The kernel never grants
+ * INT_MAX (it doubles at most INT_MAX / 2). */
+TEST_FUNCTION(rcvbuf_short)
+{
+	char text[4096] = "";
+	long long got;
+	size_t n;
+
+	lb_log = tmpfile();
+	TEST_ASSERT_PTR_NOT_NULL(lb_log, "log file");
+	if (!lb_log)
+		return;
+
+	got = rcvbuf_open(",rcvbuf=2147483647");
+	CHECK_EQ(got, rcvbuf_effective(2147483647LL), "as the kernel grants it");
+
+	rewind(lb_log);
+	n = fread(text, 1, sizeof(text) - 1, lb_log);
+	text[n] = '\0';
+	fclose(lb_log);
+	lb_log = NULL;
+	printf("  logged: %s", text[0] ? text : "nothing\n");
+
+	TEST_ASSERT(strstr(text, "WARNING: ") != NULL, "a warning");
+	TEST_ASSERT(strstr(text, "ERROR: ") == NULL, "no error");
+	TEST_ASSERT(strstr(text, "net.core.rmem_max") != NULL, "naming net.core.rmem_max");
+	TEST_ASSERT(strstr(text, "rcvbuf=") != NULL, "and the rcvbuf= key");
+}
+
+/*
+ * A burst into a stalled consumer: the buffer is open, never enabled, so the
+ * backend takes nothing from the engine's queue. The engine's receive thread
+ * moves datagrams from the socket into that queue until its 256 packet
+ * buffers (num_bufs) are taken, and the kernel holds the rest up to the
+ * socket's receive buffer. BURST_DGRAMS datagrams of 1472 bytes go to the
+ * engine's socket from its remote_addr as fast as the test can send them;
+ * the kernel counts what found the receive buffer full in the drops column
+ * of the socket's /proc/net/udp line. This does not depend on how the
+ * threads run: the engine never holds more than 256. It stays below the
+ * default net.core.netdev_max_backlog (1000), whose drops /proc/net/udp
+ * would not show.
+ */
+#define BURST_DGRAMS 768
+#define ENGINE_BUFS 256
+/* What one 1472-byte datagram takes of the receive buffer on loopback, at
+ * most (its skb's truesize: about 2.3 KiB) */
+#define DGRAM_TRUESIZE_MAX 4096
+
+/* The drops of the socket bound to 127.0.0.1:LOCAL_PORT, -1 if none */
+static long long socket_drops(void)
+{
+	char line[512], local[64];
+	unsigned long long drops;
+	long long ret = -1;
+	unsigned int port;
+	FILE *f = fopen("/proc/net/udp", "r");
+
+	if (!f)
+		return -1;
+
+	while (fgets(line, sizeof(line), f)) {
+		/* sl local rem st tx:rx tr:when retrnsmt uid timeout inode ref
+		 * pointer drops */
+		if (sscanf(line, " %*u: %63s %*s %*x %*s %*s %*s %*u %*u %*u %*u %*s %llu", local,
+				    &drops) != 2)
+			continue;
+		if (sscanf(local, "0100007F:%x", &port) == 1 && port == LOCAL_PORT) {
+			ret = (long long)drops;
+			break;
+		}
+	}
+	fclose(f);
+
+	return ret;
+}
+
+/* Send the burst; the drops it caused, or -1 */
+static long long burst(void)
+{
+	struct sockaddr_in from = {
+		.sin_family = AF_INET,
+		.sin_port = htons(SENDER_PORT),
+		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+	};
+	struct sockaddr_in to = {
+		.sin_family = AF_INET,
+		.sin_port = htons(LOCAL_PORT),
+		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+	};
+	static uint8_t dgram[IIOD_UDP_STREAM_HDR_LEN + PAYLOAD];
+	long long before, after, last;
+	unsigned int i, sent = 0;
+	struct timespec t0;
+	int fd, one = 1;
+
+	before = socket_drops();
+	TEST_ASSERT(before >= 0, "the engine's socket in /proc/net/udp");
+	if (before < 0)
+		return -1;
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0 || setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) ||
+			bind(fd, (struct sockaddr *)&from, sizeof(from))) {
+		TEST_ASSERT(false, "sender bound to the YAML's remote_addr");
+		if (fd >= 0)
+			close(fd);
+		return -1;
+	}
+
+	for (i = 0; i < BURST_DGRAMS; i++)
+		sent += sendto(fd, dgram, sizeof(dgram), 0, (struct sockaddr *)&to, sizeof(to)) ==
+			sizeof(dgram);
+	close(fd);
+	CHECK_EQ(sent, BURST_DGRAMS, "every datagram of the burst sent");
+
+	/* Loopback delivers on the sender's way out; wait until the count has
+	 * stayed put for 100 ms all the same */
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	after = socket_drops();
+	do {
+		last = after;
+		sleep_ms(100);
+		after = socket_drops();
+	} while (after != last && ms_since(&t0) < WAIT_TIMEOUT_MS);
+
+	printf("  %u datagrams sent into a stalled consumer: %lld dropped by the socket\n", sent,
+			after - before);
+
+	return after - before;
+}
+
+/* rcvbuf=0: the kernel's default buffer overflows */
+TEST_FUNCTION(burst_kernel_default)
+{
+	long long drops;
+
+	if (rcvbuf_open(",rcvbuf=0") < 0)
+		return;
+
+	drops = burst();
+	TEST_ASSERT(drops > 0, "the default receive buffer loses datagrams of the burst");
+}
+
+/* Without rcvbuf=: nothing lost, where the kernel grants the space. Exits 77
+ * (skipped) where net.core.rmem_max does not let it. */
+static int burst_sized_skip;
+
+TEST_FUNCTION(burst_sized)
+{
+	const long long need = (long long)(BURST_DGRAMS - ENGINE_BUFS) * DGRAM_TRUESIZE_MAX;
+	long long got = rcvbuf_open(""), drops;
+
+	if (got < 0)
+		return;
+	if (got < need) {
+		printf("  SKIP: daqiri_rx_socket_buffer is %lld bytes, %lld are needed: raise "
+		       "net.core.rmem_max to %lld or more\n",
+				got, need, need / 2);
+		burst_sized_skip = 1;
+		return;
+	}
+
+	drops = burst();
+	CHECK_EQ(drops, 0, "the sized receive buffer loses nothing of the burst");
+}
+
 struct lb_case {
 	const char *name;
 	void (*run)(void);
 	/* The emulator's options after --udp */
 	const char *const flags[8];
+	/* Runs only when named on the command line */
+	bool alone;
 };
 
 static const struct lb_case cases[] = {
@@ -1225,6 +1532,13 @@ static const struct lb_case cases[] = {
 	{ "slow_consumer_lossy", test_slow_consumer_lossy,
 			{ "--udp-pps", "250", "--udp-count", "12" } },
 	{ "burst_gap", test_burst_gap, { "--udp-pps", "250", "--udp-count", "32" } },
+	{ "rcvbuf_default", test_rcvbuf_default, { NULL } },
+	{ "rcvbuf_from_yaml", test_rcvbuf_from_yaml, { NULL } },
+	{ "rcvbuf_zero", test_rcvbuf_zero, { NULL } },
+	{ "rcvbuf_set", test_rcvbuf_set, { NULL } },
+	{ "rcvbuf_short", test_rcvbuf_short, { NULL } },
+	{ "burst_kernel_default", test_burst_kernel_default, { NULL } },
+	{ "burst_sized", test_burst_sized, { NULL }, true },
 };
 
 #define NB_CASES (sizeof(cases) / sizeof(cases[0]))
@@ -1261,18 +1575,47 @@ static int run_case(const char *name)
 	printf("test_udp_loopback --case %s: %d/%d passed, %d failed\n", name, test_passed,
 			test_count, test_failed);
 
-	return test_failed ? 1 : 0;
+	if (test_failed)
+		return 1;
+	return burst_sized_skip ? 77 : 0;
 }
 
-/* Each case in a process of its own, under with_emu.sh with its flags */
-static int run_all(const char *with_emu, const char *xml, const char *sample)
+/* Whether case <i> runs: every one but the "alone" ones without <names>,
+ * else the ones named */
+static bool selected(unsigned int i, char *const *names, int nb_names)
+{
+	int k;
+
+	if (!nb_names)
+		return !cases[i].alone;
+
+	for (k = 0; k < nb_names; k++)
+		if (!strcmp(names[k], cases[i].name))
+			return true;
+
+	return false;
+}
+
+/* Each case in a process of its own, under with_emu.sh with its flags; 77
+ * when every case that ran was skipped */
+static int run_all(const char *with_emu, const char *xml, const char *sample, char *const *names,
+		int nb_names)
 {
 	const char *argv[32];
-	unsigned int i, j, n, failed = 0;
+	unsigned int i, j, n, ran = 0, failed = 0, skipped = 0;
 	char self[4096];
 	ssize_t len;
-	int status;
+	int k, status;
 	pid_t pid;
+
+	for (k = 0; k < nb_names; k++) {
+		for (i = 0; i < NB_CASES && strcmp(names[k], cases[i].name); i++)
+			;
+		if (i == NB_CASES) {
+			printf("No case %s\n", names[k]);
+			return 2;
+		}
+	}
 
 	len = readlink("/proc/self/exe", self, sizeof(self) - 1);
 	if (len < 0) {
@@ -1282,6 +1625,10 @@ static int run_all(const char *with_emu, const char *xml, const char *sample)
 	self[len] = '\0';
 
 	for (i = 0; i < NB_CASES; i++) {
+		if (!selected(i, names, nb_names))
+			continue;
+
+		ran++;
 		n = 0;
 		argv[n++] = with_emu;
 		argv[n++] = "--emu-args";
@@ -1321,16 +1668,21 @@ static int run_all(const char *with_emu, const char *xml, const char *sample)
 			}
 		}
 
-		if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+		if (WIFEXITED(status) && WEXITSTATUS(status) == 77) {
+			printf("== %s SKIPPED\n", cases[i].name);
+			skipped++;
+		} else if (!WIFEXITED(status) || WEXITSTATUS(status)) {
 			printf("== %s FAILED\n", cases[i].name);
 			failed++;
 		}
 	}
 
-	printf("test_udp_loopback: %u/%u cases passed\n", (unsigned int)NB_CASES - failed,
-			(unsigned int)NB_CASES);
+	printf("test_udp_loopback: %u/%u cases passed, %u skipped\n", ran - failed - skipped, ran,
+			skipped);
 
-	return failed ? 1 : 0;
+	if (failed)
+		return 1;
+	return skipped && skipped == ran ? 77 : 0;
 }
 
 int main(int argc, char **argv)
@@ -1352,8 +1704,8 @@ int main(int argc, char **argv)
 		return ret;
 	}
 
-	if (argc != 5) {
-		printf("Usage: %s <with_emu.sh> <xml> <sample.bin> <oracle.json>\n"
+	if (argc < 5 || !strcmp(argv[1], "--case")) {
+		printf("Usage: %s <with_emu.sh> <xml> <sample.bin> <oracle.json> [<case>...]\n"
 		       "       %s --case <name> <sample.bin> <oracle.json>\n",
 				argv[0], argv[0]);
 		return 2;
@@ -1361,5 +1713,5 @@ int main(int argc, char **argv)
 
 	oracle_path = argv[4];
 
-	return run_all(argv[1], argv[2], argv[3]);
+	return run_all(argv[1], argv[2], argv[3], argv + 5, argc - 5);
 }

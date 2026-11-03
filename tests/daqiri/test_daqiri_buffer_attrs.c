@@ -48,6 +48,7 @@ static const char *const local_names[] = {
 	"daqiri_lossy",
 	"daqiri_mem_domain",
 	"daqiri_engine_kind",
+	"daqiri_rx_socket_buffer",
 };
 
 #define NB_LOCAL (sizeof(local_names) / sizeof(local_names[0]))

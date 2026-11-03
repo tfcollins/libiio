@@ -146,7 +146,8 @@ The JSON file is an object with
 (\-1 when unknown),
 .I counters
 (the \fBdaqiri_*\fR attributes; the \fBdaqiri_rx_*\fR and \fBdaqiri_blocks_*\fR
-ones as differences, the others as read) and
+ones as differences, except \fBdaqiri_rx_socket_buffer\fR, a size; the others
+as read) and
 .I check
 (\fBmode\fR, \fBbad_samples\fR).
 .SH RETURN VALUE

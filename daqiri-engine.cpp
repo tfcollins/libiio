@@ -20,6 +20,8 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -50,6 +52,14 @@ struct dq_rxq {
 	bool raw = false;
 	/* Header-data split: two memory regions, segment 0 then 1 */
 	bool hds = false;
+
+	/* Socket engine UDP: the socket's address as the YAML gives it (what
+	 * DAQIRI keys its server sockets by), host order besides; the peer
+	 * it is connected to, 0 when none */
+	bool socket = false;
+	std::string local_addr;
+	uint32_t local_ip = 0, remote_ip = 0;
+	uint16_t local_port = 0, remote_port = 0;
 
 	/* Held across every DAQIRI call on this queue. Once the process
 	 * exits, dead is set and nothing calls into DAQIRI any more. */
@@ -404,6 +414,67 @@ int parse(const char *path, daqiri::NetworkConfig &cfg, char *err, size_t errlen
 	return 0;
 }
 
+/* The IPv4 address and port of socket <fd>'s own end, or of its peer;
+ * false for anything else */
+bool sock_ipv4(int fd, bool peer, uint32_t *ip, uint16_t *port)
+{
+	struct sockaddr_in sin;
+	socklen_t len = sizeof(sin);
+
+	if ((peer ? getpeername(fd, (struct sockaddr *)&sin, &len)
+		  : getsockname(fd, (struct sockaddr *)&sin, &len)) ||
+			len < sizeof(sin) || sin.sin_family != AF_INET)
+		return false;
+
+	*ip = ntohl(sin.sin_addr.s_addr);
+	*port = ntohs(sin.sin_port);
+	return true;
+}
+
+/* The IPv4 UDP socket of queue <q> among this process's file descriptors:
+ * bound to its local_addr and, when the YAML names one, connected to its
+ * remote_addr. -ENOENT when none or more than one is. */
+int queue_socket_fd(const dq_rxq *q)
+{
+	int found = -ENOENT, nb = 0;
+	struct dirent *de;
+	DIR *d;
+
+	d = opendir("/proc/self/fd");
+	if (!d)
+		return -errno;
+
+	while ((de = readdir(d))) {
+		int fd, val;
+		socklen_t len = sizeof(val);
+		uint32_t ip;
+		uint16_t port;
+		struct stat st;
+		char *end;
+
+		errno = 0;
+		fd = (int)std::strtol(de->d_name, &end, 10);
+		if (de->d_name[0] == '.' || *end || errno || fd == dirfd(d))
+			continue;
+		if (fstat(fd, &st) || !S_ISSOCK(st.st_mode))
+			continue;
+		if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &val, &len) || val != SOCK_DGRAM)
+			continue;
+		if (!sock_ipv4(fd, false, &ip, &port) || port != q->local_port ||
+				(q->local_ip && ip != q->local_ip))
+			continue;
+		if (q->remote_ip && (!sock_ipv4(fd, true, &ip, &port) || ip != q->remote_ip ||
+						    port != q->remote_port))
+			continue;
+
+		found = fd;
+		nb++;
+	}
+	closedir(d);
+
+	return nb == 1 ? found : -ENOENT;
+}
+
 } // namespace
 
 extern "C" int dq_yaml_validate(const char *path, char *err, size_t errlen)
@@ -614,6 +685,14 @@ extern "C" int dq_rxq_open(struct dq_engine *e, int port_id, int queue_id, struc
 		q->queue = queue_id;
 		q->raw = raw;
 		q->hds = raw && qcfg->common_.mrs_.size() == 2;
+		if (!raw) {
+			q->socket = true;
+			q->local_addr = ifc->socket_.local_ip_;
+			q->local_ip = ipv4_of(ifc->socket_.local_ip_);
+			q->local_port = ifc->socket_.local_port_;
+			q->remote_ip = ipv4_of(ifc->socket_.remote_ip_);
+			q->remote_port = ifc->socket_.remote_port_;
+		}
 		e->rxqs[key] = q.get();
 		*out = q.release();
 		return 0;
@@ -694,8 +773,11 @@ extern "C" int dq_engine_rx_limits(
 		for (const auto &name : qcfg->common_.mrs_) {
 			auto it = e->cfg.mrs_.find(name);
 
-			if (it != e->cfg.mrs_.end())
-				out->buf_size += it->second.buf_size_;
+			if (it == e->cfg.mrs_.end())
+				continue;
+			out->buf_size += it->second.buf_size_;
+			if (!out->num_bufs || it->second.num_bufs_ < out->num_bufs)
+				out->num_bufs = it->second.num_bufs_;
 		}
 
 		out->raw = is_raw(c);
@@ -725,6 +807,59 @@ extern "C" void dq_rxq_close(struct dq_rxq *q)
 	} catch (...) {
 	}
 	delete q;
+}
+
+extern "C" int dq_rxq_set_rcvbuf(struct dq_rxq *q, int bytes, bool force)
+{
+	try {
+		std::lock_guard<std::mutex> lock(q->lock);
+		uintptr_t conn_id = 0;
+		daqiri::Status st;
+
+		if (q->dead)
+			return -ESHUTDOWN;
+		if (!q->socket)
+			return -ENOTSUP;
+
+		/* NULL_PTR: no server socket for that address, for example
+		 * a UDP interface in client mode */
+		st = daqiri::socket_get_server_conn_id(q->local_addr, q->local_port, &conn_id);
+		if (st == daqiri::Status::NULL_PTR)
+			return -ENOENT;
+		if (st != daqiri::Status::SUCCESS)
+			return status_to_errno(st);
+
+		st = daqiri::socket_setsockopt(conn_id, SOL_SOCKET,
+				force ? SO_RCVBUFFORCE : SO_RCVBUF, &bytes, sizeof(bytes));
+		if (st == daqiri::Status::GENERIC_FAILURE)
+			return -EIO;
+
+		return status_to_errno(st);
+	} catch (...) {
+		return -EIO;
+	}
+}
+
+extern "C" int dq_rxq_get_rcvbuf(struct dq_rxq *q, int *bytes)
+{
+	try {
+		std::lock_guard<std::mutex> lock(q->lock);
+		socklen_t len = sizeof(*bytes);
+		int fd;
+
+		if (q->dead)
+			return -ESHUTDOWN;
+		if (!q->socket)
+			return -ENOTSUP;
+
+		fd = queue_socket_fd(q);
+		if (fd < 0)
+			return fd;
+
+		return getsockopt(fd, SOL_SOCKET, SO_RCVBUF, bytes, &len) ? -errno : 0;
+	} catch (...) {
+		return -EIO;
+	}
 }
 
 extern "C" int dq_rxq_poll(struct dq_rxq *q, struct dq_burst *b)

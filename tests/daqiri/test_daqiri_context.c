@@ -86,6 +86,24 @@ TEST_FUNCTION(bad_data)
 			"udp_dst 0.0.0.0 rejected");
 }
 
+/* rcvbuf=: a byte count from 0 to INT_MAX, what setsockopt() takes */
+TEST_FUNCTION(rcvbuf_key)
+{
+	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,data=tcp,rcvbuf=-1"), -EINVAL,
+			"rcvbuf=-1 rejected");
+	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,data=tcp,rcvbuf=4M"), -EINVAL,
+			"rcvbuf=4M rejected");
+	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,data=tcp,rcvbuf="), -EINVAL,
+			"empty rcvbuf rejected");
+	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,data=tcp,rcvbuf=2147483648"), -EINVAL,
+			"rcvbuf above INT_MAX rejected");
+	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,data=tcp,rcvbuf=0"), 0, "rcvbuf=0 accepted");
+	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,data=tcp,rcvbuf=2147483647"), 0,
+			"rcvbuf=INT_MAX accepted");
+	TEST_ASSERT_EQ(create_err("daqiri:127.0.0.1,data=tcp,rcvbuf=0x800000"), 0,
+			"rcvbuf in hex accepted");
+}
+
 /* The VITA 49.2 framing and its options are gone */
 TEST_FUNCTION(removed_keys)
 {
@@ -223,6 +241,15 @@ TEST_FUNCTION(data_path_attr)
 	TEST_ASSERT_STR_EQ(val, "tcp", "daqiri_data_path is tcp");
 	TEST_ASSERT_PTR_NULL(iio_buffer_find_attr(buf, "daqiri_rx_context_packets"),
 			"no daqiri_rx_context_packets");
+
+	/* No socket over TCP */
+	attr = iio_buffer_find_attr(buf, "daqiri_rx_socket_buffer");
+	TEST_ASSERT_PTR_NOT_NULL(attr, "daqiri_rx_socket_buffer on cf-ad9361-lpc buffer 0");
+	if (!attr)
+		return;
+	ret = iio_attr_read_raw(attr, val, sizeof(val));
+	TEST_ASSERT(ret > 0, "daqiri_rx_socket_buffer readable");
+	TEST_ASSERT_STR_EQ(val, "0", "daqiri_rx_socket_buffer is 0 over TCP");
 }
 
 /* Same schema as CI/daqiri/probe-socket.cpp; parsed only, never initialised. */
@@ -297,6 +324,7 @@ int main(void)
 	RUN_TEST(has_backend);
 	RUN_TEST(bad_key);
 	RUN_TEST(bad_data);
+	RUN_TEST(rcvbuf_key);
 	RUN_TEST(removed_keys);
 	RUN_TEST(bad_yaml);
 	RUN_TEST(topology);

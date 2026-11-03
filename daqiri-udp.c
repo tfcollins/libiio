@@ -91,6 +91,7 @@
 #include <iio/iio-debug.h>
 #include <iio/iio.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <stdatomic.h>
@@ -166,6 +167,10 @@ struct dq_udp_buffer {
 	bool pending, enabled, closed;
 	struct iio_block_pdata *srv_block;
 
+	/* Receive buffer of the engine's socket as the kernel reported it at
+	 * open, in bytes; 0: no socket (raw engines) or unknown */
+	int rcvbuf;
+
 	pthread_mutex_t lock;
 	pthread_cond_t cond; /* a block left QUEUED/FILLING */
 	int wake_fd;	     /* eventfd: wakes the sleeping poller */
@@ -228,6 +233,8 @@ enum dq_attr {
 	DQ_ATTR_MEM_DOMAIN,
 	DQ_ATTR_ENGINE_KIND,
 	DQ_ATTR_DATA_PATH,
+	/* Appended: the list is in this order, after the server's own */
+	DQ_ATTR_RX_SOCKET_BUFFER,
 	DQ_ATTR_COUNT,
 };
 
@@ -256,6 +263,7 @@ const char *const dq_attr_names[] = {
 	[DQ_ATTR_MEM_DOMAIN] = "daqiri_mem_domain",
 	[DQ_ATTR_ENGINE_KIND] = "daqiri_engine_kind",
 	[DQ_ATTR_DATA_PATH] = "daqiri_data_path",
+	[DQ_ATTR_RX_SOCKET_BUFFER] = "daqiri_rx_socket_buffer",
 };
 
 const unsigned int dq_nb_attrs = DQ_ATTR_COUNT;
@@ -944,6 +952,91 @@ static int dq_udp_request(struct iio_buffer_pdata *buf, int port, struct iiod_ud
 	return 0;
 }
 
+/* CAP_NET_ADMIN in the effective set: SO_RCVBUFFORCE may go past
+ * net.core.rmem_max */
+static bool dq_cap_net_admin(void)
+{
+	unsigned long long caps = 0;
+	bool found = false;
+	char line[256];
+	FILE *f;
+
+	f = fopen("/proc/self/status", "re");
+	if (!f)
+		return false;
+	while (!found && fgets(line, sizeof(line), f))
+		found = sscanf(line, "CapEff: %llx", &caps) == 1;
+	fclose(f);
+
+	return found && ((caps >> 12) & 1); /* CAP_NET_ADMIN */
+}
+
+/*
+ * Socket engine: size the receive buffer of the queue's socket, which DAQIRI
+ * leaves at net.core.rmem_default (some 16 jumbo datagrams), before the first
+ * enable, and keep what the kernel made of it in v->rcvbuf. rcvbuf= asks for
+ * that many bytes (0: nothing asked, the kernel's default stays); without it
+ * num_bufs * buf_size of the queue, from 4 to 64 MiB, so that the kernel
+ * holds about as many datagrams as the engine's queue when the consumer
+ * falls behind. SO_RCVBUFFORCE when the process has CAP_NET_ADMIN, else (or
+ * when that fails) SO_RCVBUF, which net.core.rmem_max caps. Never fails the
+ * open: an unsized socket still receives, only it drops sooner, and the
+ * warnings say so.
+ */
+static void dq_udp_size_rcvbuf(struct dq_udp_buffer *v, int port)
+{
+	struct iio_buffer_pdata *buf = v->buf;
+	const struct dq_opts *o = &buf->ctx->opts;
+	struct dq_rxq_limits lim;
+	uint64_t target = 0;
+	char err[256];
+	int ret, got;
+
+	if (v->raw)
+		return;
+
+	if (o->rcvbuf >= 0) {
+		target = (uint64_t)o->rcvbuf;
+	} else {
+		ret = dq_engine_rx_limits(buf->ctx->engine, port, o->rxq, &lim);
+		if (!ret)
+			target = dq_udp_rcvbuf_target(lim.num_bufs, lim.buf_size);
+	}
+	if (target > INT_MAX)
+		target = INT_MAX;
+
+	if (target) {
+		ret = -EPERM;
+		if (dq_cap_net_admin())
+			ret = dq_rxq_set_rcvbuf(v->q, (int)target, true);
+		if (ret)
+			ret = dq_rxq_set_rcvbuf(v->q, (int)target, false);
+		if (ret) {
+			iio_strerror(-ret, err, sizeof(err));
+			dev_warn(buf->dev,
+					"Unable to set the UDP receive buffer of queue %d to %" PRIu64
+					" bytes: %s\n",
+					o->rxq, target, err);
+		}
+	}
+
+	ret = dq_rxq_get_rcvbuf(v->q, &got);
+	if (ret) {
+		iio_strerror(-ret, err, sizeof(err));
+		dev_warn(buf->dev, "Unable to read the UDP receive buffer of queue %d: %s\n",
+				o->rxq, err);
+		return;
+	}
+	v->rcvbuf = got;
+
+	if ((uint64_t)got < target)
+		dev_warn(buf->dev,
+				"The UDP receive buffer of queue %d is %d bytes, below the %" PRIu64
+				" asked for: datagrams may be lost when the consumer falls behind. "
+				"Raise net.core.rmem_max on this host, or set rcvbuf= (0 leaves the kernel's default)\n",
+				o->rxq, got, target);
+}
+
 static bool dq_udp_refused(int err)
 {
 	return err == -ENOTSUP || err == -EINVAL || err == -EBUSY;
@@ -1040,6 +1133,8 @@ int dq_udp_open_buffer(struct iio_buffer_pdata *buf, struct iio_channels_mask *m
 		dq_udp_free(v);
 		goto err_close_iiod;
 	}
+
+	dq_udp_size_rcvbuf(v, port);
 
 	buf->udp = v;
 	buf->path = DQ_PATH_UDP;
@@ -1576,6 +1671,8 @@ ssize_t dq_udp_read_attr(struct dq_udp_buffer *v, const char *name, char *dst, s
 		return dq_attr_print(dst, len, snprintf(dst, len, "%s", dq_mem_name(v->mem)));
 	case DQ_ATTR_ENGINE_KIND:
 		return dq_attr_print(dst, len, snprintf(dst, len, "%s", v->engine_kind));
+	case DQ_ATTR_RX_SOCKET_BUFFER:
+		return dq_attr_print(dst, len, snprintf(dst, len, "%d", v->rcvbuf));
 	case DQ_ATTR_DATA_PATH:
 	default:
 		return dq_attr_print(dst, len, snprintf(dst, len, "udp"));
