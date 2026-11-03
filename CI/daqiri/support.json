@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "project": "libiio",
+  "platforms": {
+    "host": {
+      "features": {
+        "daqiri-rx-socket": {
+          "status": "validated",
+          "tier": 1,
+          "software_only": true,
+          "workflow": "daqiri.yml",
+          "evidence": "https://github.com/tfcollins/libiio/blob/feature/daqiri-udp/doc/source/daqiri-backend.md",
+          "note": "UDP sample mode through the DAQIRI socket engine; unit, emulator and loopback tiers in CI"
+        },
+        "iiod-udp-stream": {
+          "status": "validated",
+          "tier": 1,
+          "software_only": true,
+          "workflow": "daqiri.yml",
+          "evidence": "https://github.com/tfcollins/libiio/blob/feature/daqiri-udp/tests/daqiri/README.md",
+          "note": "IIOD_OP_UDP_STREAM_SETUP and iiod-emu --udp"
+        },
+        "daqiri-rx-raw": {
+          "status": "integration-artifacts",
+          "tier": 1,
+          "evidence": "https://github.com/tfcollins/libiio/blob/feature/daqiri-udp/tests/daqiri/README.md",
+          "note": "DPDK and ibverbs raw queues implemented; not yet carrying sample mode; lab-host-only tier"
+        }
+      }
+    }
+  }
+}
