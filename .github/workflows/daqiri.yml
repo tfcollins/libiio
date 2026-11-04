@@ -71,3 +71,13 @@ jobs:
           cmake --build build -j"$(nproc)"
       - name: Unit tests
         run: ctest --test-dir build -L '^daqiri$' --output-on-failure
+      - name: Check support manifest
+        # CI/daqiri/support.json feeds the DataX SDR SDK support matrix (branch-only;
+        # not part of the upstream submission). The checker fails closed on claims
+        # that exceed their evidence.
+        run: |
+          python3 -m venv .venv-support
+          .venv-support/bin/pip install -q "git+https://github.com/tfcollins/datax_sdk_sdr@${DATAX_SDK_REV}"
+          .venv-support/bin/datax-support check CI/daqiri/support.json --repo-root .
+        env:
+          DATAX_SDK_REV: c5e31187d7b36643c144fdc0b53d339fe0c48a2d
