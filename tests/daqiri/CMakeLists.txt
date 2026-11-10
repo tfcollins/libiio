@@ -301,16 +301,16 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
         # Management and samples have different source IPs. Reuse the exact
         # byte/counter oracle and rejected-source tests rather than inventing
         # a platform-name branch in the backend.
-        set(UDP_SPLIT_ORACLE ${CMAKE_CURRENT_BINARY_DIR}/udp_split_endpoint.json)
+        set(UDP_SPLIT_ORACLE
+            ${CMAKE_CURRENT_BINARY_DIR}/udp_split_endpoint.json)
         add_test(
             NAME daqiri_udp_split_endpoint
             COMMAND
                 ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args --udp
                 --udp-from 127.0.0.2:25102 --udp-pps 250 --udp-count 64
-                --udp-json ${UDP_SPLIT_ORACLE} --
-                ${UDP_FIXTURE}/fmcomms2.xml $<TARGET_FILE:test_udp_loopback>
-                --case clean ${UDP_FIXTURE}/cf-ad9361-lpc_buf0.bin
-                ${UDP_SPLIT_ORACLE})
+                --udp-json ${UDP_SPLIT_ORACLE} -- ${UDP_FIXTURE}/fmcomms2.xml
+                $<TARGET_FILE:test_udp_loopback> --case clean
+                ${UDP_FIXTURE}/cf-ad9361-lpc_buf0.bin ${UDP_SPLIT_ORACLE})
         add_test(
             NAME daqiri_udp_split_endpoint_wrong_source
             COMMAND
