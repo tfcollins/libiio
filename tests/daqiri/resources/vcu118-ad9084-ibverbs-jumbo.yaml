@@ -1,0 +1,44 @@
+# VCU118 + AD9084 bring-up TEMPLATE, not hardware-qualified support.
+# The PCI address is deliberately nonexistent: replace it only after verifying
+# NIC ownership, cabling, MTU, raw-engine capabilities, hugepages and affinity.
+# All addresses are documentation examples. Linux TCP management is separate.
+# Use MTU 9000 consistently; negotiate 8944 sample bytes + 16-byte header.
+# A 9002-byte Ethernet frame fits below DAQIRI's 9100-byte raw-flow limit.
+# The exact card/profile/rate and the board's Linux/IIO BSP remain open gates.
+%YAML 1.2
+---
+daqiri:
+  cfg:
+    version: 1
+    stream_type: raw
+    engine: ibverbs
+    master_core: 0
+    memory_regions:
+    - name: HOST_MR
+      kind: huge
+      affinity: 0
+      num_bufs: 4096
+      buf_size: 9100
+    interfaces:
+    - name: data
+      address: '0000:ff:1f.7'
+      rx:
+        flow_isolation: true
+        queues:
+        - name: rx0
+          id: 0
+          cpu_core: 1
+          batch_size: 32
+          memory_regions:
+          - HOST_MR
+        flows:
+        - name: sample_udp
+          id: 0
+          action:
+            type: queue
+            id: 0
+          match:
+            udp_src: 4991
+            udp_dst: 4991
+            ipv4_src: 192.0.2.1
+            ipv4_dst: 192.0.2.2

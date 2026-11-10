@@ -103,11 +103,16 @@ TEST_FUNCTION(socket_engine)
 {
 	const struct endpoint loopback = { IP(127, 0, 0, 1), IP(127, 0, 0, 1), 25101, 25102 };
 	const struct endpoint zcu102 = { IP(192, 0, 2, 2), IP(192, 0, 2, 1), 4991, 4991 };
+	const struct endpoint split = { IP(127, 0, 0, 1), IP(127, 0, 0, 2), 25101, 25102 };
 	struct endpoint ep;
 	int ret;
 
 	ret = endpoint_of("socket-udp-loopback.yaml", "", 0, &ep);
 	check("socket-udp-loopback.yaml queue 0", ret, &ep, &loopback);
+	ret = endpoint_of("socket-udp-split-endpoint.yaml", "data", 0, &ep);
+	check("split control/data source addresses", ret, &ep, &split);
+	ret = endpoint_of("zu11eg-socket-mtu1500.yaml", "data", 0, &ep);
+	check("ZU11EG socket template", ret, &ep, &zcu102);
 
 	/* The interface by name and by address, as iface= takes it */
 	ret = endpoint_of("zcu102-socket.yaml", "data", 0, &ep);
@@ -160,6 +165,7 @@ TEST_FUNCTION(raw_flows)
 	 * 2.2.0.192 */
 	const struct endpoint q0 = { IP(192, 0, 2, 2), IP(192, 0, 2, 1), 4991, 4990 };
 	const struct endpoint q1 = { IP(198, 51, 100, 7), 0, 6001, 0 };
+	const struct endpoint platform = { IP(192, 0, 2, 2), IP(192, 0, 2, 1), 4991, 4991 };
 	const char *require = getenv("DAQIRI_REQUIRE_RAW_ENGINES");
 	char path[4096], err[256] = "", log[8192];
 	bool required = require && !strcmp(require, "1");
@@ -187,6 +193,8 @@ TEST_FUNCTION(raw_flows)
 	check("raw-flows-ibverbs.yaml queue 0", ret, &ep, &q0);
 	ret = endpoint_of("raw-flows-ibverbs.yaml", "0000:ff:1f.7", 1, &ep);
 	check("raw-flows-ibverbs.yaml queue 1", ret, &ep, &q1);
+	ret = endpoint_of("vcu118-ad9084-ibverbs-jumbo.yaml", "data", 0, &ep);
+	check("VCU118 raw endpoint template (parsed, never initialised)", ret, &ep, &platform);
 }
 
 int main(int argc, char **argv)
