@@ -298,6 +298,37 @@ if (WITH_DAQIRI_BACKEND AND WITH_IIOD_EMU)
         set_tests_properties(daqiri_udp_rcvbuf_burst PROPERTIES SKIP_RETURN_CODE
                                                                 77)
 
+        # Management and samples have different source IPs. Reuse the exact
+        # byte/counter oracle and rejected-source tests rather than inventing
+        # a platform-name branch in the backend.
+        set(UDP_SPLIT_ORACLE
+            ${CMAKE_CURRENT_BINARY_DIR}/udp_split_endpoint.json)
+        add_test(
+            NAME daqiri_udp_split_endpoint
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args --udp
+                --udp-from 127.0.0.2:25102 --udp-pps 250 --udp-count 64
+                --udp-json ${UDP_SPLIT_ORACLE} -- ${UDP_FIXTURE}/fmcomms2.xml
+                $<TARGET_FILE:test_udp_loopback> --case clean
+                ${UDP_FIXTURE}/cf-ad9361-lpc_buf0.bin ${UDP_SPLIT_ORACLE})
+        add_test(
+            NAME daqiri_udp_split_endpoint_wrong_source
+            COMMAND
+                ${CMAKE_CURRENT_SOURCE_DIR}/with_emu.sh --emu-args --udp --
+                ${XMLS}/fmcomms2.xml $<TARGET_FILE:test_daqiri_lifecycle>
+                --wrong-source)
+        set_tests_properties(
+            daqiri_udp_split_endpoint daqiri_udp_split_endpoint_wrong_source
+            PROPERTIES
+                LABELS
+                daqiri-loopback
+                ENVIRONMENT
+                "IIOD_EMU=$<TARGET_FILE:iiod-emu>;DAQIRI_YAML=${CMAKE_CURRENT_SOURCE_DIR}/resources/socket-udp-split-endpoint.yaml;IIO_DAQIRI_YAML="
+                RESOURCE_LOCK
+                "iiod-emu-30431;daqiri-udp-25101"
+                TIMEOUT
+                60)
+
         # The same device and mask through data=tcp and data=udp: the same
         # bytes, the sample file repeated
         add_executable(test_udp_equivalence test_udp_equivalence.c)

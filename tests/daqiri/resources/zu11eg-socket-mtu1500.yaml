@@ -1,0 +1,33 @@
+# ADRV9009-ZU11EG bring-up TEMPLATE, not a qualified platform configuration.
+# Replace documentation addresses and CPU affinity with the discovered setup.
+# Linux TCP management has a separate URI/address. This socket receives only
+# FPGA samples from 192.0.2.1:4991. At MTU 1500, max UDP data is 1472 bytes;
+# setup therefore requests 1456 sample bytes after the version-1 header.
+# This is the socket comparison path, not proof of full-profile reception.
+daqiri:
+  cfg:
+    version: 1
+    stream_type: socket
+    master_core: 0
+    memory_regions:
+    - name: HOST_MR
+      kind: host
+      affinity: 0
+      num_bufs: 4096
+      buf_size: 2048
+    interfaces:
+    - name: data
+      address: 192.0.2.2
+      socket_config:
+        mode: server
+        local_addr: 'udp://192.0.2.2:4991'
+        remote_addr: 'udp://192.0.2.1:4991'
+        max_payload_size: 1472
+      rx:
+        queues:
+        - name: rx0
+          id: 0
+          cpu_core: 1
+          batch_size: 32
+          memory_regions:
+          - HOST_MR
